@@ -17,7 +17,7 @@ def get_free_port(default=8521, max_tries=100):
                 continue
     raise RuntimeError("No available ports found!")
 
-canvas_element = CanvasGrid(agent_portrayal, GRID_WIDTH, GRID_HEIGHT, 600, 600)
+canvas_element = CanvasGrid(agent_portrayal, GRID_WIDTH, GRID_HEIGHT, 900, 900)
 
 model_params = {
     "width": GRID_WIDTH,
