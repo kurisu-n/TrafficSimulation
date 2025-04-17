@@ -1,11 +1,12 @@
-# server.py
+#server.py
+
 import socket
 from mesa.visualization.modules import CanvasGrid
 from mesa.visualization.ModularVisualization import ModularServer
 from creation import StructuredCityModel, GRID_WIDTH, GRID_HEIGHT
 from cell import agent_portrayal
+from cellinspector import CellInspector
 
-# Helper function to find a free port
 def get_free_port(default=8521, max_tries=100):
     for offset in range(max_tries):
         port = default + offset
@@ -17,26 +18,24 @@ def get_free_port(default=8521, max_tries=100):
                 continue
     raise RuntimeError("No available ports found!")
 
-canvas_element = CanvasGrid(agent_portrayal, GRID_WIDTH, GRID_HEIGHT, 900, 900)
 
-model_params = {
-    "width": GRID_WIDTH,
-    "height": GRID_HEIGHT,
-}
+# This will be called whenever you click on the grid.
+def cell_click_handler(model, x, y):
+    # Store the last‐clicked position on the model
+    model.last_click = (x, y)
+
+# Build the grid with our click handler
+canvas = CanvasGrid(agent_portrayal,
+                  GRID_WIDTH, GRID_HEIGHT,
+                  900, 900)
 
 server = ModularServer(
     StructuredCityModel,
-    [canvas_element],
+    [canvas],        # ← INFO PANE **first**, canvas second
     "Structured Urban Grid World",
-    model_params
+    {"width": GRID_WIDTH, "height": GRID_HEIGHT}
 )
 
-# Automatically assign a free port
 server.port = get_free_port()
-
-# Note: Mesa's server does not currently support a built-in shutdown button.
-# To end the process gracefully, instruct users to stop the script manually (Ctrl+C)
-# or close the browser tab if run interactively.
-
-print(f"\nServer running on http://localhost:{server.port}\nPress Ctrl+C in the terminal to stop it.\n")
+print(f"Server on http://localhost:{server.port}")
 server.launch()

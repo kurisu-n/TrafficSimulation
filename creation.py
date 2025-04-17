@@ -51,41 +51,35 @@ class StructuredCityModel(Model):
         self.grid = MultiGrid(width, height, torus=False)
         self.schedule = RandomActivation(self)
 
+        # interior bounds
         self.interior_x_min = WALL_THICKNESS + SIDEWALK_RING_WIDTH
         self.interior_x_max = width  - (WALL_THICKNESS + SIDEWALK_RING_WIDTH) - 1
         self.interior_y_min = WALL_THICKNESS + SIDEWALK_RING_WIDTH
         self.interior_y_max = height - (WALL_THICKNESS + SIDEWALK_RING_WIDTH) - 1
 
-        self.initial_road = RING_ROAD_TYPE  # New option: None, "R2", or "R3"
-
+        self.initial_road = RING_ROAD_TYPE
         self._blocks_data = []
 
-        # (1) Outer wall
-        self._place_thick_wall()
-        # (2) Sidewalk ring
-        self._place_sidewalk_inner_ring()
-        # (3) Clear interior => "Nothing"
-        self._clear_interior()
+        # trackers for quick lookup
+        self.block_entrances   = []
+        self.highway_entrances = []
+        self.highway_exits     = []
+        self.controlled_roads  = []
+        self.traffic_lights    = []
 
-        # (4) Build roads & sidewalks (the remaining roads will lie inside the ring road)
+        # build sequence
+        self._place_thick_wall()
+        self._place_sidewalk_inner_ring()
+        self._clear_interior()
         self._build_roads_and_sidewalks()
 
         if CARVE_SUBBLOCK_ROADS:
             self._carve_subblock_roads()
 
-        # (5) Flood-fill leftover => blocks
         self._flood_fill_blocks_storing_data()
-
-        # (6) Eliminate dead ends for R3 & normal Intersection
         self._eliminate_dead_ends()
-
-        # Upgrade R2 to intersections where applicable.
         self._upgrade_r2_to_intersections()
-
-        # (7) Place block entrances
         self._final_place_block_entrances()
-
-        # (8) Post-process directions
         self._remove_invalid_intersection_directions()
         self._add_entrance_directions()
         self._add_traffic_lights()
@@ -638,61 +632,61 @@ class StructuredCityModel(Model):
 
         for y in range(h):
             for x in range(w):
-                if (x, y) in visited:
-                    continue
-                if not self._is_type(x, y, "Nothing"):
+                # Skip anything already visited or not “Nothing”
+                if (x, y) in visited or not self._is_type(x, y, "Nothing"):
                     continue
 
-                stack = [(x, y)]
-                region = []
+                # — Flood‑fill this empty region —
+                stack, region = [(x, y)], []
                 while stack:
                     cx, cy = stack.pop()
-                    if (cx, cy) in visited:
-                        continue
-                    if not self._is_type(cx, cy, "Nothing"):
+                    if (cx, cy) in visited or not self._is_type(cx, cy, "Nothing"):
                         continue
                     visited.add((cx, cy))
                     region.append((cx, cy))
-                    for (nx, ny) in [(cx+1,cy),(cx-1,cy),(cx,cy+1),(cx,cy-1)]:
+                    for nx, ny in [(cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)]:
                         if self._in_bounds(nx, ny) and (nx, ny) not in visited:
                             if self._is_type(nx, ny, "Nothing"):
                                 stack.append((nx, ny))
 
                 if not region:
-                    continue
+                    continue  # safety
 
-                # bounding box => block type
-                min_x = min(r[0] for r in region)
-                max_x = max(r[0] for r in region)
-                min_y = min(r[1] for r in region)
-                max_y = max(r[1] for r in region)
+                # — Determine block_type via bounding‐box heuristics —
+                min_x = min(px for px, _ in region)
+                max_x = max(px for px, _ in region)
+                min_y = min(py for _, py in region)
+                max_y = max(py for _, py in region)
                 w_bb = max_x - min_x + 1
                 h_bb = max_y - min_y + 1
 
                 if w_bb < 3 or h_bb < 3:
                     block_type = "Empty"
                 else:
-                    if random.random() < (1-EMPTY_BLOCK_CHANGE):
-                        block_type = random.choice(["Residential","Office","Market","Leisure"])
+                    if random.random() < (1 - EMPTY_BLOCK_CHANGE):
+                        block_type = random.choice(["Residential", "Office", "Market", "Leisure"])
                     else:
                         block_type = "Empty"
 
-                # fill region
-                for (bx, by) in region:
+                # — Fill every cell in region with that block_type —
+                for bx, by in region:
                     self._replace_cell(bx, by, block_type, f"{block_type}_{bx}_{by}")
 
-                # convert ring => sidewalk
+                # — Carve the “ring” around it for potential entrances —
                 ring = set()
-                for (bx, by) in region:
-                    for (nx, ny) in [(bx+1,by),(bx-1,by),(bx,by+1),(bx,by-1)]:
+                for bx, by in region:
+                    for nx, ny in [(bx + 1, by), (bx - 1, by), (bx, by + 1), (bx, by - 1)]:
                         if self._in_bounds(nx, ny) and (nx, ny) not in region:
                             ring.add((nx, ny))
 
-                for (sx, sy) in ring:
+                for sx, sy in ring:
                     if self._is_type(sx, sy, "Nothing"):
                         self._replace_cell(sx, sy, "Sidewalk", f"Sidewalk_{sx}_{sy}")
 
+                # — Assign a unique block_id and store all data —
+                block_id = len(self._blocks_data) + 1
                 self._blocks_data.append({
+                    "block_id": block_id,
                     "block_type": block_type,
                     "region": region,
                     "ring": list(ring)
@@ -775,35 +769,31 @@ class StructuredCityModel(Model):
     # (7) Place block entrances
     # -----------------------------------------------------------------------
     def _final_place_block_entrances(self):
-        valid_entrance_blocks = {"Residential","Office","Market","Leisure"}
+        valid_types = {"Residential", "Office", "Market", "Leisure"}
 
-        for block_info in self._blocks_data:
-            btype = block_info["block_type"]
-            region = block_info["region"]
-            ring   = block_info["ring"]
-            if btype not in valid_entrance_blocks:
+        for info in self._blocks_data:
+            if info["block_type"] not in valid_types:
                 continue
 
-            road_candidates = []
-            for (rx, ry) in ring:
-                if self._touches_road((rx, ry)):
-                    road_candidates.append((rx, ry))
+            # find ring cells that touch a road
+            road_candidates = [
+                (rx, ry)
+                for (rx, ry) in info["ring"]
+                if self._touches_road((rx, ry))
+            ]
+            if not road_candidates:
+                continue
 
-            if road_candidates:
-                chosen = random.choice(road_candidates)
-                cx, cy = chosen
-                self._replace_cell(cx, cy, "BlockEntrance", f"BlockEntrance_{cx}_{cy}")
+            # pick one, make it a BlockEntrance
+            cx, cy = random.choice(road_candidates)
+            self._replace_cell(cx, cy, "BlockEntrance", f"BlockEntrance_{cx}_{cy}")
+            agent = self.grid.get_cell_list_contents((cx, cy))[0]
 
-    def _touches_road(self, cell):
-        x, y = cell
-        for (nx, ny) in [(x+1,y),(x-1,y),(x,y+1),(x,y-1)]:
-            if self._in_bounds(nx, ny):
-                ags = self.grid.get_cell_list_contents((nx, ny))
-                if ags and ags[0].cell_type in [
-                    "R1","R2","R3","Intersection","HighwayEntrance"
-                ]:
-                    return True
-        return False
+            # annotate and track
+            agent.block_id   = info["block_id"]
+            agent.block_type = info["block_type"]
+            self.block_entrances.append(agent)
+
 
     # -----------------------------------------------------------------------
     # (8A) Remove invalid intersection directions
@@ -1158,43 +1148,38 @@ class StructuredCityModel(Model):
     def _replace_boundary_highways_with_entrances(self):
         w, h = self.grid.width, self.grid.height
 
-        # all cells in the outer‐wall band
+        # (1) Collect all cells in the WALL_THICKNESS band
         edge_coords = set()
-        for row in range(WALL_THICKNESS):
+        for y in range(WALL_THICKNESS):
             for x in range(w):
-                edge_coords.add((x, row))
-        for row in range(h - WALL_THICKNESS, h):
+                edge_coords.add((x, y))
+        for y in range(h - WALL_THICKNESS, h):
             for x in range(w):
-                edge_coords.add((x, row))
-        for col in range(WALL_THICKNESS):
+                edge_coords.add((x, y))
+        for x in range(WALL_THICKNESS):
             for y in range(h):
-                edge_coords.add((col, y))
-        for col in range(w - WALL_THICKNESS, w):
+                edge_coords.add((x, y))
+        for x in range(w - WALL_THICKNESS, w):
             for y in range(h):
-                edge_coords.add((col, y))
+                edge_coords.add((x, y))
 
-        # helper to pick entrance vs exit
-        inward = {
-            0: "E", w - 1: "W",  # left edge → inward is east; right edge → west
-        }
-        inward_y = {
-            0: "N", h - 1: "S"  # bottom edge (y=0) → north; top edge (y=h-1) → south
-        }
-        opposite = {"N": "S", "S": "N", "E": "W", "W": "E"}
+        # Maps for detecting “inward” direction
+        inward_x = {0: "E", w - 1: "W"}
+        inward_y = {0: "N", h - 1: "S"}
 
-        # 1) Replace R1 cells on the true outermost boundary
+        # (2) Replace only the true boundary R1 → HighwayEntrance / Exit
         for (ex, ey) in edge_coords:
             ags = self.grid.get_cell_list_contents((ex, ey))
             if not ags or ags[0].cell_type != "R1":
                 continue
+            # must actually be on the very outer edge:
             if not (ex in (0, w - 1) or ey in (0, h - 1)):
                 continue
 
             old_dirs = list(ags[0].directions)
-            # determine which way is _into_ the city
-            if ex in inward and inward[ex] in old_dirs:
-                new_type = "HighwayEntrance"
-            elif ey in inward_y and inward_y[ey] in old_dirs:
+            # inward‐pointing arrow → Entrance, otherwise Exit
+            if (ex in inward_x and inward_x[ex] in old_dirs) or \
+               (ey in inward_y and inward_y[ey] in old_dirs):
                 new_type = "HighwayEntrance"
             else:
                 new_type = "HighwayExit"
@@ -1203,54 +1188,107 @@ class StructuredCityModel(Model):
             self._replace_cell(ex, ey, new_type, f"{new_type}_{ex}_{ey}")
             he = self.grid.get_cell_list_contents((ex, ey))[0]
             he.directions = old_dirs
+            he.highway_orientation = (
+                "horizontal" if ey in (0, h - 1) else "vertical"
+            )
+            he.highway_id = f"highway_{he.highway_orientation}"
+            if new_type == "HighwayEntrance":
+                self.highway_entrances.append(he)
+            else:
+                self.highway_exits.append(he)
 
-        # 2) Carve sidewalk next to any highway‐through‐the‐wall cell
-        for (ex, ey) in edge_coords:
-            ags = self.grid.get_cell_list_contents((ex, ey))
-            if ags and ags[0].cell_type in {"HighwayEntrance", "HighwayExit"}:
-                for (nx, ny) in [(ex + 1, ey), (ex - 1, ey), (ex, ey + 1), (ex, ey - 1)]:
-                    if (nx, ny) in edge_coords:
-                        ngs = self.grid.get_cell_list_contents((nx, ny))
-                        if ngs and ngs[0].cell_type == "Wall":
-                            self._replace_cell(nx, ny, "Sidewalk", f"Sidewalk_{nx}_{ny}")
 
     def _add_traffic_lights(self):
         """
-        Convert any road‐cell that points into an Intersection into a ControlledRoad,
-        save its original color, and turn adjacent Sidewalks into TrafficLight agents.
+        Convert any road‐type cell that points into an Intersection
+        into a ControlledRoad, and carve TrafficLight agents on
+        all adjacent Sidewalks.
+        This scans *all* road cells (including sub‑block roads).
         """
-        for (x, y), (_rtype, _orient, _off, _size, _bdir) in list(self._road_cells.items()):
-            ag = self.grid.get_cell_list_contents((x, y))[0]
-            dirs = ag.directions.copy()
-            old_type = ag.cell_type
-            for d in dirs:
-                nx, ny = self._next_cell_in_direction(x, y, d)
-                if not self._in_bounds(nx, ny):
+        road_types = {"R1", "R2", "R3", "R4", "HighwayEntrance"}
+
+        w, h = self.grid.width, self.grid.height
+        for x in range(w):
+            for y in range(h):
+                # fetch the only agent here
+                ags = self.grid.get_cell_list_contents((x, y))
+                if not ags:
                     continue
-                neigh = self.grid.get_cell_list_contents((nx, ny))[0]
-                if neigh.cell_type == "Intersection":
-                    # replace with ControlledRoad
+                ag = ags[0]
+                if ag.cell_type not in road_types:
+                    continue
+
+                dirs = ag.directions.copy()
+                old_type = ag.cell_type
+
+                # check each arrow for an Intersection neighbor
+                for d in dirs:
+                    nx, ny = self._next_cell_in_direction(x, y, d)
+                    if not self._in_bounds(nx, ny):
+                        continue
+                    neigh = self.grid.get_cell_list_contents((nx, ny))[0]
+                    if neigh.cell_type != "Intersection":
+                        continue
+
+                    # → convert to ControlledRoad
                     self._replace_cell(x, y, "ControlledRoad", f"ControlledRoad_{x}_{y}")
                     ctrl = self.grid.get_cell_list_contents((x, y))[0]
                     ctrl.directions = dirs
                     ctrl.status = "Pass"
-                    # store the original road color
                     ctrl.base_color = ZONE_COLORS.get(old_type)
-                    # carve TrafficLight agents on adjacent sidewalks
-                    for sx, sy in [(x+1, y), (x-1, y), (x, y+1), (x, y-1)]:
+                    self.controlled_roads.append(ctrl)
+
+                    # → carve lights on every adjoining sidewalk
+                    for sx, sy in [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]:
                         if not self._in_bounds(sx, sy):
                             continue
-                        sag = self.grid.get_cell_list_contents((sx, sy))[0]
-                        if sag.cell_type == "Sidewalk":
-                            self._replace_cell(sx, sy, "TrafficLight", f"TrafficLight_{sx}_{sy}")
-                            tl = self.grid.get_cell_list_contents((sx, sy))[0]
-                            tl.status = "Pass"
-                    break
+                        neigh2 = self.grid.get_cell_list_contents((sx, sy))[0]
+                        if neigh2.cell_type != "Sidewalk":
+                            continue
 
+                        # replace with a TrafficLight
+                        self._replace_cell(sx, sy, "TrafficLight", f"TrafficLight_{sx}_{sy}")
+                        tl = self.grid.get_cell_list_contents((sx, sy))[0]
+                        tl.status = "Pass"
+                        tl.controlled_road = ctrl
+                        ctrl.lights.append(tl)
+                        self.traffic_lights.append(tl)
+
+                        # ray‑cast out along the light’s own arrows to find block entrances
+                        for dd in tl.directions:
+                            bx, by = sx, sy
+                            while True:
+                                bx, by = self._next_cell_in_direction(bx, by, dd)
+                                if not self._in_bounds(bx, by):
+                                    break
+                                nb = self.grid.get_cell_list_contents((bx, by))[0]
+                                if nb.cell_type == "BlockEntrance":
+                                    tl.controlled_blocks.append(nb.block_id)
+                                    break
+
+                    # only one set of lights per road cell
+                    break
 
     # -----------------------------------------------------------------------
     # Utilities
     # -----------------------------------------------------------------------
+
+    def _touches_road(self, cell):
+        """
+        Return True if the given (x,y) is adjacent to any road‐type cell
+        (so we know where a BlockEntrance can go).
+        """
+        x, y = cell
+        for nx, ny in [(x+1, y), (x-1, y), (x, y+1), (x, y-1)]:
+            if self._in_bounds(nx, ny):
+                ags = self.grid.get_cell_list_contents((nx, ny))
+                if ags and ags[0].cell_type in [
+                    "R1", "R2", "R3", "Intersection", "HighwayEntrance", "ControlledRoad"
+                ]:
+                    return True
+        return False
+
+
     def _replace_cell(self, x, y, new_type, new_id):
         old_list = self.grid.get_cell_list_contents((x, y))
         for oa in old_list:
@@ -1273,3 +1311,20 @@ class StructuredCityModel(Model):
 
     def step(self):
         self.schedule.step()
+
+    # — Convenience getters —
+
+    def get_block_entrances(self):
+        return self.block_entrances
+
+    def get_highway_entrances(self):
+        return self.highway_entrances
+
+    def get_highway_exits(self):
+        return self.highway_exits
+
+    def get_controlled_roads(self):
+        return self.controlled_roads
+
+    def get_traffic_lights(self):
+        return self.traffic_lights

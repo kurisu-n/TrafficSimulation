@@ -1,10 +1,8 @@
-#cell.py
+# cell.py
 
 from mesa import Agent
 import colorsys
 import matplotlib.colors as mcolors
-
-
 
 def _hex_to_rgb(h):
     h = h.lstrip('#')
@@ -16,27 +14,15 @@ def _rgb_to_hex(rgb):
     )
 
 def desaturate(color, sat_factor=0.5, light_factor=0.0):
-    """
-    Accepts a CSS name (e.g. "thistle") or "#RRGGBB".
-    Returns a hex string with its saturation scaled by `sat_factor`
-    and its lightness increased by `light_factor`.
-    - sat_factor: 0 = gray, 1 = original saturation
-    - light_factor: added to L component (0 = no change, up to 1 = full white)
-    """
-    # get RGB floats
     if isinstance(color, str) and color.startswith('#'):
         r, g, b = _hex_to_rgb(color)
     else:
         r, g, b = mcolors.to_rgb(color)
-    # convert to HLS
     h, l, s = colorsys.rgb_to_hls(r, g, b)
-    # adjust saturation and lightness
     s *= sat_factor
     l = min(1.0, l + light_factor)
-    # back to RGB
     r2, g2, b2 = colorsys.hls_to_rgb(h, l, s)
     return _rgb_to_hex((r2, g2, b2))
-
 
 # Colors for each zone/road type
 ZONE_COLORS = {
@@ -45,13 +31,13 @@ ZONE_COLORS = {
     "Market": "green",
     "Leisure": "palevioletred",
     "Empty":"papayawhip",
-    "R1": "dodgerblue",        # 4‑lane highway (unchanged)
-    "R2": "saddlebrown",       # 2‑lane major
-    "R3": "darkgreen",         # darker than before
+    "R1": "dodgerblue",
+    "R2": "saddlebrown",
+    "R3": "darkgreen",
     "Sidewalk": "grey",
     "Intersection": "yellow",
     "BlockEntrance": "red",
-    "HighwayEntrance": "royalblue", # Dark blue for boundary highway entrance
+    "HighwayEntrance": "royalblue",
     "HighwayExit": "blue",
     "TrafficLight":"magenta",
     "ControlledRoad":"thistle",
@@ -61,26 +47,18 @@ ZONE_COLORS = {
     "Nothing":"white"
 }
 
-
-
-# Direction icons for visualization
-DIRECTION_ICONS = {
-    "N": "↑",
-    "S": "↓",
-    "E": "→",
-    "W": "←",
-}
+DIRECTION_ICONS = {"N":"↑","S":"↓","E":"→","W":"←"}
 
 class CellAgent(Agent):
     """
     A cell that can be:
-      - Road (R1, R2, R3)
+      - Road (R1, R2, R3, R4)
       - Intersection
-      - HighwayEntrance
-      - Wall
-      - Sidewalk
-      - Zone block (Residential, Office, etc.)
-    'directions' can store lane directions, e.g. ['E','W'] or ['N','S','N','S'].
+      - BlockEntrance
+      - HighwayEntrance / Exit
+      - TrafficLight
+      - ControlledRoad
+      - Wall, Sidewalk, Zone blocks...
     """
     def __init__(self, unique_id, model, cell_type):
         super().__init__(unique_id, model)
@@ -89,21 +67,59 @@ class CellAgent(Agent):
         self.status = None
         self.base_color = ZONE_COLORS.get(cell_type)
 
+        # new fields:
+        self.occupied = False
+        self.block_id = None
+        self.block_type = None
+        self.highway_id = None
+        self.highway_orientation = None
+
+        # for intersections controlled by traffic lights:
+        self.lights = []
+        self.controlled_road = None
+        self.controlled_blocks = []
+
     def step(self):
         pass
 
+    # ———— utility/query methods ————
+
+    def get_position(self):
+        # Assumes unique_id like "Type_x_y"
+        parts = self.unique_id.split('_')
+        return int(parts[-2]), int(parts[-1])
+
+    def successors(self):
+        """Return dict direction → list of neighbor CellAgents."""
+        x, y = self.get_position()
+        nbrs = {}
+        for d in self.directions:
+            nx, ny = self.model._next_cell_in_direction(x, y, d)
+            if self.model._in_bounds(nx, ny):
+                nbr = self.model.grid.get_cell_list_contents((nx, ny))[0]
+                nbrs.setdefault(d, []).append(nbr)
+        return nbrs
+
+    def is_block_entrance(self):
+        return self.cell_type == "BlockEntrance"
+
+    def is_highway_entrance(self):
+        return self.cell_type == "HighwayEntrance"
+
+    def is_highway_exit(self):
+        return self.cell_type == "HighwayExit"
+
+    def is_controlled_road(self):
+        return self.cell_type == "ControlledRoad"
+
+    def is_traffic_light(self):
+        return self.cell_type == "TrafficLight"
+
+
 def agent_portrayal(agent):
-    """
-    Portrayal function for Mesa visualization.
-    Renders each CellAgent with color + optional direction arrows.
-    """
-    # Convert lane directions to arrow icons
     arrows = [DIRECTION_ICONS.get(d, '') for d in agent.directions]
     direction_text = ' '.join(arrows)
-
-    # Descriptions for GUI tooltips
     desc_map = {
-        # Zones
         "Residential": "Residential City Block",
         "Office": "Office City Block",
         "Market": "Market City Block",
@@ -112,7 +128,7 @@ def agent_portrayal(agent):
         "R1": "Highway (4 Lanes, 2/Dir)",
         "R2": "Major Road (2 Lanes, 1/Dir)",
         "R3": "Local Road (1 Lane, One Dir)",
-        "R4": "Sub‑block Road (L‑shaped, 1 Lane, One Dir)",
+        "R4": "Sub‑block Road (L‑shaped)",
         "Sidewalk": "Pedestrian Walkway",
         "Intersection": "Road intersection",
         "BlockEntrance": "City Block Entrance & Exit",
@@ -122,33 +138,21 @@ def agent_portrayal(agent):
         "ControlledRoad":"Road Controlled by Traffic Light",
         "Wall": "Outer Wall",
         "Other": "Unknown",
-        "Nothing": "Empty/unused space",
-
-
+        "Nothing":"Empty/unused space",
     }
-    description = desc_map.get(agent.cell_type, "Zone")
-
     portrayal = {
-        "Shape": "rect",
-        "w": 1.0,
-        "h": 1.0,
-        "Filled": True,
+        "Shape": "rect", "w":1.0, "h":1.0, "Filled":True,
         "Color": agent.base_color,
         "Layer": 0,
         "Type": agent.cell_type,
-        "Description": description,
+        "Description": desc_map.get(agent.cell_type, "")
     }
-
-    if agent.cell_type == "ControlledRoad":
-        if agent.status == "Stop":
-            # red light
-            portrayal["Color"] = ZONE_COLORS["ControlledRoadClosed"]
-        else:
-            # pass → desaturate the **original** road color
-            base = agent.base_color
-            portrayal["Color"] = desaturate(base, sat_factor=0.75, light_factor=0.25)
-
+    if agent.cell_type=="ControlledRoad":
+        portrayal["Color"] = (
+            ZONE_COLORS["ControlledRoadClosed"]
+            if agent.status=="Stop"
+            else desaturate(agent.base_color, sat_factor=0.75, light_factor=0.25)
+        )
     if direction_text:
         portrayal["Directions"] = direction_text
-
     return portrayal
