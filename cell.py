@@ -4,20 +4,25 @@ from mesa import Agent
 
 # Colors for each zone/road type
 ZONE_COLORS = {
-    "Residential": "lightblue",
+    "Residential": "cyan",
     "Office": "orange",
     "Market": "green",
-    "Leisure": "violet",
+    "Leisure": "pink",
     "Other": "gray",
-    "R1": "dodgerblue",        # Highway (4 lanes)
-    "R2": "saddlebrown",       # Major Road (2 lanes, each direction)
-    "R3": "pink",              # Local Road (1 lane)
+    "R1": "dodgerblue",        # 4‑lane highway (unchanged)
+    "R2": "saddlebrown",       # 2‑lane major
+    "R3": "teal",         # darker than before
+    "R4": "darkgreen",    # one‑way L‑shaped cuts Local Road (1 lane)
     "Sidewalk": "gray",
     "Intersection": "yellow",
     "BlockEntrance": "red",
     "HighwayEntrance": "navy", # Dark blue for boundary highway entrance
-    "Nothing": "lime",
+    "HighwayExit": "lightsteelblue",
+    "TrafficLight":"magenta",
+    "ControlledRoadOpen":"thistle",
+    "ControlledRoadClosed":"crimson",
     "Wall": "black",
+    "Nothing":"white"
 }
 
 # Direction icons for visualization
@@ -60,7 +65,8 @@ def agent_portrayal(agent):
     desc_map = {
         "R1": "Highway (4 cells wide, 2 lanes/direction)",
         "R2": "Major Road (2-lane, each direction)",
-        "R3": "Local Road (1-lane, one-way)",
+        "R3": "Local Road (1‑lane, one‑way)",
+        "R4": "Sub‑block Road (L‑shaped, 1‑lane, one‑way)",
         "Sidewalk": "Pedestrian walkway",
         "Intersection": "Road intersection",
         "BlockEntrance": "Block entrance",

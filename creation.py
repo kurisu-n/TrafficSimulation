@@ -14,17 +14,23 @@ WALL_THICKNESS = 4
 SIDEWALK_RING_WIDTH = 1
 
 ROAD_THICKNESS = {
-    "R1": 4,  # Highway (2 lanes each direction => 4-lane total)
-    "R2": 2,  # Major Road
-    "R3": 1,  # Local one-way
+    "R1": 4,
+    "R2": 2,
+    "R3": 1,
+    "R4": 1,                # NEW
 }
 
-MIN_BLOCK_SPACING = 6
-MAX_BLOCK_SPACING = 12
+OPTIMIZED_INTERSECTIONS = False
 
-MIN_SUB_BLOCK_SPACING = 4
+MIN_BLOCK_SPACING = 8
+MAX_BLOCK_SPACING = 16
 
-ROAD_OFFSET_FROM_EDGES = 0
+CARVE_SUBBLOCK_ROADS = True
+SUBBLOCK_ROADS_HAVE_INTERSECTIONS = True
+MIN_SUBBLOCK_SPACING = 4          # already in your file – reused
+SUBBLOCK_CHANCE    = 0.35
+SUBBLOCK_ROAD_TYPE = "R3"
+
 HIGHWAY_OFFSET_FROM_EDGES = 5
 
 RING_ROAD_TYPE = "R2"
@@ -61,6 +67,9 @@ class StructuredCityModel(Model):
         # (4) Build roads & sidewalks (the remaining roads will lie inside the ring road)
         self._build_roads_and_sidewalks()
 
+        if CARVE_SUBBLOCK_ROADS:
+            self._carve_subblock_roads()
+
         # (5) Flood-fill leftover => blocks
         self._flood_fill_blocks_storing_data()
 
@@ -76,6 +85,7 @@ class StructuredCityModel(Model):
         # (8) Post-process directions
         self._remove_invalid_intersection_directions()
         self._add_entrance_directions()
+
 
     def _compute_highway_inset(self):
         return self.interior_x_min + HIGHWAY_OFFSET_FROM_EDGES
@@ -308,6 +318,183 @@ class StructuredCityModel(Model):
                 return [new_dir]
         return default_dirs
 
+    # -------------------------------------------------------------------
+    #  (4b)  Carve optional L‑shaped sub‑block roads (type R4)
+    # -------------------------------------------------------------------
+    def _carve_subblock_roads(self):
+        """
+        1.  Randomly inserts a one‑cell‑wide L‑shaped R4 road in large
+            interior blocks (probability SUB_BLOCK_L_CHANCE).
+        2.  Guarantees:
+            • Smaller sub‑block ≥ MIN_SUB_BLOCK_SPACING in both axes.
+            • One leg is inbound, the other outbound.
+            • Entry cell (inbound leg) arrow → pivot.
+            • Exit cell (outbound leg) arrow ← away from pivot.
+            • Pivot cell shows **only** the outbound arrow.
+            • Legs are extended until they touch an existing road (no
+              sidewalk stubs).
+            • Every non‑road neighbour (orthogonal & diagonal) of the pivot
+              becomes Sidewalk, so blocks never touch the corner cell.
+        """
+        DIR_VEC = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
+        opposite = {"N": "S", "S": "N", "E": "W", "W": "E"}.__getitem__
+        ROAD = {"R1", "R2", "R3", "R4", "Intersection", "HighwayEntrance"}
+
+        # ---------------- helpers ----------------------------------------------
+        def neighbours(cx, cy):
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, ny = cx + dx, cy + dy
+                if self._in_bounds(nx, ny):
+                    yield nx, ny
+
+        def lay_r4_cell(x, y, arrow):
+            """Convert (x,y) → R4 (if not already road) and edge it with sidewalk."""
+            ag = self.grid.get_cell_list_contents((x, y))[0]
+            if ag.cell_type not in ROAD:
+                self._replace_cell(x, y, SUBBLOCK_ROAD_TYPE, f"{SUBBLOCK_ROAD_TYPE}_{x}_{y}")
+                ag = self.grid.get_cell_list_contents((x, y))[0]
+                ag.directions = [arrow]
+            elif ag.cell_type == "R4" and arrow not in ag.directions:
+                ag.directions.append(arrow)
+
+            # add sidewalk ring
+            for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                if self._in_bounds(nx, ny) and self._is_type(nx, ny, "Nothing"):
+                    self._replace_cell(nx, ny, "Sidewalk", f"Sidewalk_{nx}_{ny}")
+
+        def extend_to_road(sx, sy, march_dir, arrow_dir):
+            """
+            March from (sx,sy) in *march_dir*.  Convert every Sidewalk or
+            Nothing cell into R4, giving it *arrow_dir*.  Stops at – and now
+            also updates – the first pre‑existing road cell, ensuring the
+            outside road can actually turn into the new sub‑block road.
+            """
+            dx, dy = DIR_VEC[march_dir]
+            cx, cy = sx, sy
+            while self._in_bounds(cx, cy):
+                tgt = self.grid.get_cell_list_contents((cx, cy))[0]
+                if tgt.cell_type in ROAD:              # <── reached network
+                    # ─────────────────────────────────────────────────────────
+                    # NEW: let that outside‑road cell point *into* the R4 leg
+                    if arrow_dir not in tgt.directions:
+                        tgt.directions.append(arrow_dir)
+                    # ─────────────────────────────────────────────────────────
+                    break
+                if tgt.cell_type in {"Sidewalk", "Nothing"}:
+                    lay_r4_cell(cx, cy, arrow_dir)
+                    cx, cy = cx + dx, cy + dy
+                else:                                   # wall / zone
+                    break
+
+        # ---------------- iterate over all 'Nothing' blobs ---------------------
+        visited = set()
+        W, H = self.grid.width, self.grid.height
+        for y in range(H):
+            for x in range(W):
+                if (x, y) in visited or not self._is_type(x, y, "Nothing"):
+                    continue
+
+                # ---- flood‑fill this blob ----
+                stack, region = [(x, y)], []
+                while stack:
+                    cx, cy = stack.pop()
+                    if (cx, cy) in visited or not self._is_type(cx, cy, "Nothing"):
+                        continue
+                    visited.add((cx, cy));
+                    region.append((cx, cy))
+                    for nx, ny in neighbours(cx, cy):
+                        if (nx, ny) not in visited and self._is_type(nx, ny, "Nothing"):
+                            stack.append((nx, ny))
+
+                if not region or random.random() > SUBBLOCK_CHANCE:
+                    continue
+
+                # ---- bounding box / quick reject ----
+                min_x = min(pt[0] for pt in region);
+                max_x = max(pt[0] for pt in region)
+                min_y = min(pt[1] for pt in region);
+                max_y = max(pt[1] for pt in region)
+                width = max_x - min_x + 1;
+                height = max_y - min_y + 1
+                if width < 2 * MIN_SUBBLOCK_SPACING + 1 or \
+                        height < 2 * MIN_SUBBLOCK_SPACING + 1:
+                    continue
+
+                # ---------- pick pivot & orientation ---------------------------
+                for _ in range(20):  # up to 20 attempts
+                    px = random.randint(min_x + MIN_SUBBLOCK_SPACING,
+                                        max_x - MIN_SUBBLOCK_SPACING)
+                    py = random.randint(min_y + MIN_SUBBLOCK_SPACING,
+                                        max_y - MIN_SUBBLOCK_SPACING)
+                    hor_dir = random.choice(["W", "E"])
+                    ver_dir = random.choice(["N", "S"])
+                    small_w = (px - min_x) if hor_dir == "W" else (max_x - px)
+                    small_h = (py - min_y) if ver_dir == "S" else (max_y - py)
+                    if small_w >= MIN_SUBBLOCK_SPACING and \
+                            small_h >= MIN_SUBBLOCK_SPACING:
+                        break
+                else:
+                    continue
+
+                # ---------- inbound / outbound assignment ----------------------
+                inbound_leg, outbound_leg = random.choice(
+                    [("horizontal", "vertical"), ("vertical", "horizontal")]
+                )
+                leg_dir = {
+                    "horizontal": {"in": opposite(hor_dir), "out": hor_dir},
+                    "vertical": {"in": opposite(ver_dir), "out": ver_dir},
+                }
+
+                # ---------- carve horizontal leg --------------------------------
+                if hor_dir == "W":
+                    xs = range(px - 1, min_x - 1, -1);
+                    hx_end, hy_end = min_x, py
+                else:
+                    xs = range(px + 1, max_x + 1);
+                    hx_end, hy_end = max_x, py
+                h_dir_cells = leg_dir["horizontal"]["in" if inbound_leg == "horizontal"
+                else "out"]
+                for hx in xs:
+                    lay_r4_cell(hx, py, h_dir_cells)
+
+                # ---------- carve vertical leg ----------------------------------
+                if ver_dir == "S":
+                    ys = range(py, min_y - 1, -1);
+                    vx_end, vy_end = px, min_y
+                else:
+                    ys = range(py, max_y + 1);
+                    vx_end, vy_end = px, max_y
+                v_dir_cells = leg_dir["vertical"]["in" if inbound_leg == "vertical"
+                else "out"]
+                for vy in ys:
+                    lay_r4_cell(px, vy, v_dir_cells)
+
+                # ---------- configure pivot (corner) ----------------------------
+                pivot = self.grid.get_cell_list_contents((px, py))[0]  # R4
+                pivot.directions = [h_dir_cells if outbound_leg == "horizontal"
+                                    else v_dir_cells]  # single outbound arrow
+
+                # ---------- extend legs out to road -----------------------------
+                # horizontal extension
+                arrow_h = h_dir_cells  # arrow on extension
+                extend_to_road(hx_end + DIR_VEC[hor_dir][0],
+                               hy_end + DIR_VEC[hor_dir][1],
+                               hor_dir, arrow_h)
+
+                # vertical extension
+                arrow_v = v_dir_cells
+                extend_to_road(vx_end + DIR_VEC[ver_dir][0],
+                               vy_end + DIR_VEC[ver_dir][1],
+                               ver_dir, arrow_v)
+
+                # ---------- surround pivot with sidewalk ------------------------
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1),
+                               (1, 1), (-1, 1), (1, -1), (-1, -1)):
+                    nx, ny = px + dx, py + dy
+                    if self._in_bounds(nx, ny):
+                        nag = self.grid.get_cell_list_contents((nx, ny))[0]
+                        if nag.cell_type not in ROAD and nag.cell_type != "Wall":
+                            self._replace_cell(nx, ny, "Sidewalk", f"Sidewalk_{nx}_{ny}")
 
     # -----------------------------------------------------------------------
     # (5) Flood-fill leftover => blocks (store for entrances)
@@ -383,7 +570,7 @@ class StructuredCityModel(Model):
     # -----------------------------------------------------------------------
     def _eliminate_dead_ends(self):
         # Only consider these types as road cells.
-        road_types = {"R1", "R2", "R3", "Intersection", "HighwayEntrance"}
+        road_types = {"R1", "R2", "R3", "R4", "Intersection", "HighwayEntrance"}
         # Mark R2, R3, and Intersection as removable if they become dead-ends.
         removable_types = {"R2", "R3", "Intersection"}
 
@@ -491,7 +678,7 @@ class StructuredCityModel(Model):
     # (8A) Remove invalid intersection directions
     # -----------------------------------------------------------------------
     def _remove_invalid_intersection_directions(self):
-        road_types = {"R1", "R2", "R3", "Intersection", "HighwayEntrance"}
+        road_types = {"R1", "R2", "R3", "R4", "Intersection", "HighwayEntrance"}
         intersection_types = {"Intersection"}
 
         for y in range(self.grid.height):
@@ -552,7 +739,7 @@ class StructuredCityModel(Model):
     # (8B) Ensure roads next to a block entrance have direction in
     # -----------------------------------------------------------------------
     def _add_entrance_directions(self):
-        road_types = {"R1","R2","R3","Intersection","HighwayEntrance"}
+        road_types = {"R1", "R2", "R3", "R4", "Intersection", "HighwayEntrance"}
 
         for y in range(self.grid.height):
             for x in range(self.grid.width):
@@ -749,7 +936,7 @@ class StructuredCityModel(Model):
           - For vertical roads, the band cells are ordered from west (offset 0) to east.
         """
         # R3 remains one-way using its given direction.
-        if rtype == "R3":
+        if rtype in ("R3", "R4"):  # <── was just R3
             return [band_dir]
 
         # For two-lane roads (R2), assume band_size == 2.
