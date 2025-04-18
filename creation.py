@@ -3,7 +3,6 @@
 import random
 from mesa import Model
 from mesa.space import MultiGrid
-from mesa.time import RandomActivation
 
 from cell import CellAgent
 from cell import ZONE_COLORS
@@ -38,6 +37,22 @@ HIGHWAY_OFFSET_FROM_EDGES = 5
 
 RING_ROAD_TYPE = "R2"
 
+class CustomScheduler:
+    def __init__(self, model):
+        self.model = model
+        self._agents = []
+
+    def add(self, agent):
+        self._agents.append(agent)
+
+    def step(self):
+        for agent in self._agents:
+            agent.step()
+
+    @property
+    def agents(self):
+        return self._agents
+
 class StructuredCityModel(Model):
     def __init__(self, width=GRID_WIDTH, height=GRID_HEIGHT, seed=None):
         """
@@ -47,9 +62,9 @@ class StructuredCityModel(Model):
                    boundaries inward so that other roads (and highways) are placed further from
                    the grid edge.
         """
-        super().__init__(seed=seed)
+        super().__init__(seed=seed)  # Required in Mesa 3.x
+        self.schedule = CustomScheduler(self)
         self.grid = MultiGrid(width, height, torus=False)
-        self.schedule = RandomActivation(self)
 
         # interior bounds
         self.interior_x_min = WALL_THICKNESS + SIDEWALK_RING_WIDTH
@@ -202,14 +217,14 @@ class StructuredCityModel(Model):
         w, h = self.grid.width, self.grid.height
         for y in range(h):
             for x in range(w):
-                ag = CellAgent(f"Wall_{x}_{y}", self, "Wall")
+                ag = CellAgent(self, "Wall",(x,y))
                 self.grid.place_agent(ag, (x, y))
                 self.schedule.add(ag)
 
-    def _replace_if_wall(self, x, y, new_type, new_id):
+    def _replace_if_wall(self, x, y, new_type):
         ags = self.grid.get_cell_list_contents((x, y))
         if ags and ags[0].cell_type == "Wall":
-            self._replace_cell(x, y, new_type, new_id)
+            self._replace_cell(x, y, new_type)
 
     # -----------------------------------------------------------------------
     # (2) Sidewalk ring (hug every wall cell’s inner face)
@@ -1289,12 +1304,12 @@ class StructuredCityModel(Model):
         return False
 
 
-    def _replace_cell(self, x, y, new_type, new_id):
+    def _replace_cell(self, x, y, new_type):
         old_list = self.grid.get_cell_list_contents((x, y))
         for oa in old_list:
             self.grid.remove_agent(oa)
             self.schedule.remove(oa)
-        ag = CellAgent(new_id, self, new_type)
+        ag = CellAgent(self, new_type,(x, y))
         self.grid.place_agent(ag, (x, y))
         self.schedule.add(ag)
 

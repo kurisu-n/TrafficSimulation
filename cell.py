@@ -50,31 +50,21 @@ ZONE_COLORS = {
 DIRECTION_ICONS = {"N":"↑","S":"↓","E":"→","W":"←"}
 
 class CellAgent(Agent):
-    """
-    A cell that can be:
-      - Road (R1, R2, R3, R4)
-      - Intersection
-      - BlockEntrance
-      - HighwayEntrance / Exit
-      - TrafficLight
-      - ControlledRoad
-      - Wall, Sidewalk, Zone blocks...
-    """
-    def __init__(self, unique_id, model, cell_type):
-        super().__init__(unique_id, model)
+    def __init__(self, model, cell_type, pos):
+        super().__init__(model)
         self.cell_type = cell_type
+        self.pos = pos  # REQUIRED for Mesa 3.x visualization
         self.directions = []
         self.status = None
         self.base_color = ZONE_COLORS.get(cell_type)
 
-        # new fields:
+        # additional fields
         self.occupied = False
         self.block_id = None
         self.block_type = None
         self.highway_id = None
         self.highway_orientation = None
 
-        # for intersections controlled by traffic lights:
         self.lights = []
         self.controlled_road = None
         self.controlled_blocks = []
@@ -82,23 +72,30 @@ class CellAgent(Agent):
     def step(self):
         pass
 
-    # ———— utility/query methods ————
-
     def get_position(self):
-        # Assumes unique_id like "Type_x_y"
-        parts = self.unique_id.split('_')
-        return int(parts[-2]), int(parts[-1])
+        return self.pos
 
     def successors(self):
-        """Return dict direction → list of neighbor CellAgents."""
-        x, y = self.get_position()
+        x, y = self.pos
         nbrs = {}
         for d in self.directions:
             nx, ny = self.model._next_cell_in_direction(x, y, d)
             if self.model._in_bounds(nx, ny):
-                nbr = self.model.grid.get_cell_list_contents((nx, ny))[0]
-                nbrs.setdefault(d, []).append(nbr)
+                neighbor = self.model.grid.get_cell_list_contents((nx, ny))[0]
+                nbrs.setdefault(d, []).append(neighbor)
         return nbrs
+
+    def set_pass(self):
+        if self.cell_type == "TrafficLight":
+            self.status = "Pass"
+            if self.controlled_road is not None:
+                self.controlled_road.status = "Pass"
+
+    def set_stop(self):
+        if self.cell_type == "TrafficLight":
+            self.status = "Stop"
+            if self.controlled_road is not None:
+                self.controlled_road.status = "Stop"
 
     def is_block_entrance(self):
         return self.cell_type == "BlockEntrance"
@@ -117,42 +114,4 @@ class CellAgent(Agent):
 
 
 def agent_portrayal(agent):
-    arrows = [DIRECTION_ICONS.get(d, '') for d in agent.directions]
-    direction_text = ' '.join(arrows)
-    desc_map = {
-        "Residential": "Residential City Block",
-        "Office": "Office City Block",
-        "Market": "Market City Block",
-        "Leisure": "Leisure City Block",
-        "Empty": "Empty City Block",
-        "R1": "Highway (4 Lanes, 2/Dir)",
-        "R2": "Major Road (2 Lanes, 1/Dir)",
-        "R3": "Local Road (1 Lane, One Dir)",
-        "R4": "Sub‑block Road (L‑shaped)",
-        "Sidewalk": "Pedestrian Walkway",
-        "Intersection": "Road intersection",
-        "BlockEntrance": "City Block Entrance & Exit",
-        "HighwayEntrance": "Highway Entrance",
-        "HighwayExit": "Highway Exit",
-        "TrafficLight":"Intersection Traffic Light",
-        "ControlledRoad":"Road Controlled by Traffic Light",
-        "Wall": "Outer Wall",
-        "Other": "Unknown",
-        "Nothing":"Empty/unused space",
-    }
-    portrayal = {
-        "Shape": "rect", "w":1.0, "h":1.0, "Filled":True,
-        "Color": agent.base_color,
-        "Layer": 0,
-        "Type": agent.cell_type,
-        "Description": desc_map.get(agent.cell_type, "")
-    }
-    if agent.cell_type=="ControlledRoad":
-        portrayal["Color"] = (
-            ZONE_COLORS["ControlledRoadClosed"]
-            if agent.status=="Stop"
-            else desaturate(agent.base_color, sat_factor=0.75, light_factor=0.25)
-        )
-    if direction_text:
-        portrayal["Directions"] = direction_text
-    return portrayal
+    return {"color": "black", "marker": "s", "size": 10}
