@@ -53,6 +53,7 @@ class CellAgent(Agent):
     def __init__(self, model, cell_type, pos):
         super().__init__(model)
         self.cell_type = cell_type
+        self.label = f"{cell_type} ({pos})"
         self.pos = pos  # REQUIRED for Mesa 3.x visualization
         self.directions = []
         self.status = None
@@ -114,4 +115,60 @@ class CellAgent(Agent):
 
 
 def agent_portrayal(agent):
-    return {"color": "black", "marker": "s", "size": 10}
+    """
+    Matplotlib portrayal for Solara/Mesa 3.x:
+    - color: fill color of the marker
+    - marker: Matplotlib marker style
+    - size: marker size (in data coords)
+    - text: optional text label (e.g., arrows or descriptions)
+    """
+    # Build arrow string for direction
+    arrows = [DIRECTION_ICONS.get(d, "") for d in agent.directions]
+    direction_text = " ".join(arrows)
+
+    # Human-readable descriptions
+    desc_map = {
+        "Residential":    "Residential",
+        "Office":         "Office",
+        "Market":         "Market",
+        "Leisure":        "Leisure",
+        "Empty":          "Empty",
+        "R1":             "Highway",
+        "R2":             "Major Road",
+        "R3":             "Local Road",
+        "R4":             "Sub-block Road",
+        "Sidewalk":       "Sidewalk",
+        "Intersection":   "Intersection",
+        "BlockEntrance":  "Block Entrance",
+        "HighwayEntrance":"Hwy Entrance",
+        "HighwayExit":    "Hwy Exit",
+        "TrafficLight":   "Traffic Light",
+        "ControlledRoad": "Controlled Road",
+        "Wall":           "Wall",
+        "Nothing":        "Unused",
+    }
+
+    # Base color (fallback to white)
+    color = agent.base_color or ZONE_COLORS.get(agent.cell_type, "white")
+
+    # Special coloring for controlled roads
+    if agent.cell_type == "ControlledRoad":
+        if agent.status == "Stop":
+            color = ZONE_COLORS["ControlledRoadClosed"]
+        else:
+            color = desaturate(agent.base_color, sat_factor=0.75, light_factor=0.25)
+
+    # Define marker and size
+    portrayal = {
+        "color":  color,
+        "marker": "s",
+        "size":   200,
+        "zorder": 1,
+    }
+
+    # Add text label: preference to direction arrows
+    text_label = direction_text or desc_map.get(agent.cell_type, "")
+    #if text_label:
+    #    portrayal["text"] = text_label
+
+    return portrayal
