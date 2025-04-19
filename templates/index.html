@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Structured Urban Grid</title>
+</head>
+<body>
+    <h1>Structured Urban Grid</h1>
+    <form method="get" action="/">
+        Width: <input type="number" name="width" value="{{ width }}" min="10" max="200">
+        Height: <input type="number" name="height" value="{{ height }}" min="10" max="200"><br>
+        Seed: <input type="text" name="seed" value="{{ seed }}"><br>
+        <button type="submit">Update Grid</button>
+    </form>
+    <img src="{{ url_for('plot_png', width=width, height=height, seed=seed) }}" alt="Grid Visualization">
+</body>
+</html>
