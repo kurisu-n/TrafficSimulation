@@ -1,12 +1,12 @@
-#creation.py
+#city_model.py
 
 import random
 from mesa import Model
 from mesa.space import MultiGrid
 from mesa.time import RandomActivation
+from typing import List
 
-from cell import CellAgent
-from cell import ZONE_COLORS
+from Simulation.agents.cell import CellAgent, ZONE_COLORS
 
 GRID_WIDTH = 100
 GRID_HEIGHT = 100
@@ -23,7 +23,7 @@ ROAD_THICKNESS = {
 
 OPTIMIZED_INTERSECTIONS = True
 
-EMPTY_BLOCK_CHANGE = 0.1
+EMPTY_BLOCK_CHANCE = 0.1
 
 MIN_BLOCK_SPACING = 8
 MAX_BLOCK_SPACING = 16
@@ -38,8 +38,25 @@ HIGHWAY_OFFSET_FROM_EDGES = 5
 
 RING_ROAD_TYPE = "R2"
 
-class StructuredCityModel(Model):
-    def __init__(self, width=GRID_WIDTH, height=GRID_HEIGHT, seed=None):
+TRAFFIC_LIGHT_RANGE = 10
+
+class CityModel(Model):
+    def __init__(self,
+                 width=GRID_WIDTH,
+                 height=GRID_HEIGHT,
+                 wall_thickness = WALL_THICKNESS,
+                 sidewalk_ring_width = SIDEWALK_RING_WIDTH,
+                 ring_road_type=RING_ROAD_TYPE,
+                 min_block_spacing = MIN_BLOCK_SPACING,
+                 max_block_spacing = MAX_BLOCK_SPACING,
+                 optimized_intersections=OPTIMIZED_INTERSECTIONS,
+                 empty_block_chance = EMPTY_BLOCK_CHANCE,
+                 carve_subblock_roads = CARVE_SUBBLOCK_ROADS,
+                 subblock_roads_have_intersections=SUBBLOCK_ROADS_HAVE_INTERSECTIONS,
+                 min_subblock_spacing = MIN_SUBBLOCK_SPACING,
+                 highway_offset_from_edges = HIGHWAY_OFFSET_FROM_EDGES,
+                 traffic_light_range = TRAFFIC_LIGHT_RANGE,
+                 seed=None):
         """
         ring_road: None (default) means no ring road; otherwise it should be one of the
                    road types "R1", "R2", or "R3". When provided, the ring road is drawn
@@ -48,14 +65,29 @@ class StructuredCityModel(Model):
                    the grid edge.
         """
         super().__init__(seed=seed)
-        self.grid = MultiGrid(width, height, torus=False)
+        self.width = width
+        self.height = height
+        self.wall_thickness = wall_thickness
+        self.sidewalk_ring_width = sidewalk_ring_width
+        self.ring_road_type = ring_road_type
+        self.min_block_spacing = min_block_spacing
+        self.max_block_spacing = max_block_spacing
+        self.optimized_intersections = optimized_intersections
+        self.empty_block_chance = empty_block_chance
+        self.carve_subblock_roads = carve_subblock_roads
+        self.subblock_roads_have_intersections = subblock_roads_have_intersections
+        self.min_subblock_spacing = min_subblock_spacing
+        self.highway_offset_from_edges = highway_offset_from_edges
+        self.traffic_light_range = traffic_light_range
+
+        self.grid = MultiGrid(self.width, self.height, torus=False)
         self.schedule = RandomActivation(self)
 
         # interior bounds
-        self.interior_x_min = WALL_THICKNESS + SIDEWALK_RING_WIDTH
-        self.interior_x_max = width  - (WALL_THICKNESS + SIDEWALK_RING_WIDTH) - 1
-        self.interior_y_min = WALL_THICKNESS + SIDEWALK_RING_WIDTH
-        self.interior_y_max = height - (WALL_THICKNESS + SIDEWALK_RING_WIDTH) - 1
+        self.interior_x_min = self.wall_thickness + self.sidewalk_ring_width
+        self.interior_x_max = self.width  - (self.wall_thickness + self.sidewalk_ring_width) - 1
+        self.interior_y_min = self.wall_thickness + self.sidewalk_ring_width
+        self.interior_y_max = self.height - (self.wall_thickness + self.sidewalk_ring_width) - 1
 
         self.initial_road = RING_ROAD_TYPE
         self._blocks_data = []
@@ -73,7 +105,7 @@ class StructuredCityModel(Model):
         self._clear_interior()
         self._build_roads_and_sidewalks()
 
-        if CARVE_SUBBLOCK_ROADS:
+        if self.carve_subblock_roads:
             self._carve_subblock_roads()
 
         self._flood_fill_blocks_storing_data()
@@ -108,7 +140,7 @@ class StructuredCityModel(Model):
 
         # ---------- helpers -------------------------------------------------
         def _dummy_band(coord: int, rtype: str):
-            return (coord, coord, rtype, None)        # (start, end, type, dir)
+            return coord, coord, rtype, None  # (start, end, type, dir)
 
         def _band_info(band, coord: int):
             st, en, rt, bd = band
@@ -118,12 +150,12 @@ class StructuredCityModel(Model):
 
         def _ensure_intersection(cx: int, cy: int):
             """Create / register a 4‑way intersection at (cx, cy)."""
-            ags = self.grid.get_cell_list_contents((cx, cy))
+            ags = self.cell_contents(cx, cy)
             if ags and ags[0].cell_type == "Intersection":
                 return
             self._replace_cell(cx, cy, "Intersection",
                                f"Intersection_{cx}_{cy}")
-            ag = self.grid.get_cell_list_contents((cx, cy))[0]
+            ag = self.cell_contents(cx, cy)[0]
             ag.directions = ["N", "S", "E", "W"]
             if hasattr(self, "_intersection_cells"):
                 self._intersection_cells.add((cx, cy))
@@ -159,7 +191,7 @@ class StructuredCityModel(Model):
         )
 
         # ── 3. OPTIMISED mode – keep only outer‑most lanes ────────────────
-        if OPTIMIZED_INTERSECTIONS and single_vs_multi:
+        if self.optimized_intersections and single_vs_multi:
             if h_sz > 1:                         # horizontal is the multi
                 multi_rt, multi_orient = h_rt, "horizontal"
                 multi_off, multi_sz, bdir = h_off, h_sz, h_bd
@@ -170,11 +202,11 @@ class StructuredCityModel(Model):
             # keep only offset 0 or offset band_size‑1
             if multi_off not in (0, multi_sz - 1):
                 # inner lane → revert to normal road cell
-                dirs = self._compute_lane_dirs(
+                dirs = self._compute_lane_dirs(x,y,
                     multi_rt, multi_orient, multi_off, multi_sz, bdir
                 )
                 self._replace_cell(x, y, multi_rt, f"{multi_rt}_{x}_{y}")
-                ag = self.grid.get_cell_list_contents((x, y))[0]
+                ag = self.cell_contents(x, y)[0]
                 ag.directions = dirs
                 if hasattr(self, "_intersection_cells"):
                     self._intersection_cells.discard((x, y))
@@ -193,13 +225,13 @@ class StructuredCityModel(Model):
 
 
     def _compute_highway_inset(self):
-        return self.interior_x_min + HIGHWAY_OFFSET_FROM_EDGES
+        return self.interior_x_min + self.highway_offset_from_edges
 
     # -----------------------------------------------------------------------
     # (1) Boundary wall
     # -----------------------------------------------------------------------
     def _place_thick_wall(self):
-        w, h = self.grid.width, self.grid.height
+        w, h = self.get_width(), self.get_height()
         for y in range(h):
             for x in range(w):
                 ag = CellAgent(f"Wall_{x}_{y}", self, "Wall")
@@ -207,7 +239,7 @@ class StructuredCityModel(Model):
                 self.schedule.add(ag)
 
     def _replace_if_wall(self, x, y, new_type, new_id):
-        ags = self.grid.get_cell_list_contents((x, y))
+        ags = self.cell_contents(x, y)
         if ags and ags[0].cell_type == "Wall":
             self._replace_cell(x, y, new_type, new_id)
 
@@ -215,9 +247,9 @@ class StructuredCityModel(Model):
     # (2) Sidewalk ring (hug every wall cell’s inner face)
     # -----------------------------------------------------------------------
     def _place_sidewalk_inner_ring(self):
-        w, h = self.grid.width, self.grid.height
-        ws = WALL_THICKNESS
-        sr = SIDEWALK_RING_WIDTH
+        w, h = self.get_width(), self.get_height()
+        ws = self.wall_thickness
+        sr = self.sidewalk_ring_width
 
         # carve each sidewalk “layer” depth sr
         for layer in range(sr):
@@ -261,7 +293,7 @@ class StructuredCityModel(Model):
         # -----------------------------------------------------------------------
 
     def _build_roads_and_sidewalks(self):
-        w, h = self.grid.width, self.grid.height
+        w, h = self.get_width(), self.get_height()
 
         # (A) Make R2/R3 road bands in the interior.
         # We pass the forced initial_road value to both horizontal and vertical bands.
@@ -275,8 +307,8 @@ class StructuredCityModel(Model):
         )
 
         # (B) Force 1 horizontal + 1 vertical R1 highway
-        self._force_one_highway(self.horizontal_bands, total_size=h, orientation="horizontal")
-        self._force_one_highway(self.vertical_bands, total_size=w, orientation="vertical")
+        self._force_one_highway(self.horizontal_bands, total_size=h)
+        self._force_one_highway(self.vertical_bands, total_size=w)
 
         # (C) Place roads in the grid
         self._intersection_cells = set()
@@ -339,19 +371,16 @@ class StructuredCityModel(Model):
             self._make_intersection(ix, iy)
 
         # Mark roads
-        # Mark roads
         for (rx, ry), (rtype, orientation, offset, band_size, bdir) in self._road_cells.items():
             if (rx, ry) in self._intersection_cells:
                 continue
             self._replace_cell(rx, ry, rtype, f"{rtype}_{rx}_{ry}")
-            rag = self.grid.get_cell_list_contents((rx, ry))[0]
+            rag = self.cell_contents(rx, ry)[0]
             # Compute the default directions.
-            directions = self._compute_lane_dirs(rtype, orientation, offset, band_size, bdir)
+            directions = self._compute_lane_dirs(rx, ry, rtype, orientation, offset, band_size, bdir)
             # Override directions for forced corner cells if needed.
             # Determine the bands covering this cell.
-            hband = self._find_band_covering(ry, self.horizontal_bands)
-            vband = self._find_band_covering(rx, self.vertical_bands)
-            directions = self._override_corner_lane_dirs(rx, ry, directions, hband, vband)
+            directions = self._override_corner_lane_dirs(rx, ry, directions)
             rag.directions = directions
 
         # Sidewalk around roads
@@ -367,14 +396,14 @@ class StructuredCityModel(Model):
                 if (nx, ny) in road_positions or (nx, ny) in self._intersection_cells:
                     continue
 
-                neigh = self.grid.get_cell_list_contents((nx, ny))[0]
+                neigh = self.cell_contents(nx, ny)[0]
                 # 1) carve into empty space
                 if neigh.cell_type == "Nothing":
                     self._replace_cell(nx, ny, "Sidewalk", f"Sidewalk_{nx}_{ny}")
 
                 # 2) *also* carve into the wall if this is a highway‐lane
                 else:
-                    curr = self.grid.get_cell_list_contents((rx, ry))[0].cell_type
+                    curr = self.cell_contents(rx, ry)[0].cell_type
                     if neigh.cell_type == "Wall" and curr in {"R1", "HighwayEntrance", "HighwayExit"}:
                         self._replace_cell(nx, ny, "Sidewalk", f"Sidewalk_{nx}_{ny}")
 
@@ -382,7 +411,7 @@ class StructuredCityModel(Model):
         self._replace_boundary_highways_with_entrances()
 
 
-    def _override_corner_lane_dirs(self, rx, ry, default_dirs, hband, vband):
+    def _override_corner_lane_dirs(self, rx, ry, default_dirs):
         """
         If the model uses an initial R2 road, override the lane direction for cells
         in the forced corner blocks with a manually specified mapping.
@@ -461,9 +490,9 @@ class StructuredCityModel(Model):
             • Every non‑road neighbour (orthogonal & diagonal) of the pivot
               becomes Sidewalk, so blocks never touch the corner cell.
         """
-        DIR_VEC = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
+        dir_vec = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
         opposite = {"N": "S", "S": "N", "E": "W", "W": "E"}.__getitem__
-        ROAD = {"R1", "R2", "R3", "R4", "Intersection", "HighwayEntrance"}
+        road = {"R1", "R2", "R3", "R4", "Intersection", "HighwayEntrance"}
 
         # ---------------- helpers ----------------------------------------------
         def neighbours(cx, cy):
@@ -474,10 +503,10 @@ class StructuredCityModel(Model):
 
         def lay_r4_cell(x, y, arrow):
             """Convert (x,y) → R4 (if not already road) and edge it with sidewalk."""
-            ag = self.grid.get_cell_list_contents((x, y))[0]
-            if ag.cell_type not in ROAD:
+            ag = self.cell_contents(x, y)[0]
+            if ag.cell_type not in road:
                 self._replace_cell(x, y, SUBBLOCK_ROAD_TYPE, f"{SUBBLOCK_ROAD_TYPE}_{x}_{y}")
-                ag = self.grid.get_cell_list_contents((x, y))[0]
+                ag = self.cell_contents(x, y)[0]
                 ag.directions = [arrow]
             elif ag.cell_type == "R4" and arrow not in ag.directions:
                 ag.directions.append(arrow)
@@ -494,12 +523,12 @@ class StructuredCityModel(Model):
             also updates – the first pre‑existing road cell, ensuring the
             outside road can actually turn into the new sub‑block road.
             """
-            dx, dy = DIR_VEC[march_dir]
+            dx, dy = dir_vec[march_dir]
             cx, cy = sx, sy
             while self._in_bounds(cx, cy):
-                tgt = self.grid.get_cell_list_contents((cx, cy))[0]
-                if tgt.cell_type in ROAD:  # reached network
-                    if SUBBLOCK_ROADS_HAVE_INTERSECTIONS:
+                tgt = self.cell_contents(cx, cy)[0]
+                if tgt.cell_type in road:  # reached network
+                    if self.subblock_roads_have_intersections:
                         self._make_intersection(cx, cy)
                         self._intersection_cells.add((cx, cy))
                     else:
@@ -515,7 +544,7 @@ class StructuredCityModel(Model):
 
         # ---------------- iterate over all 'Nothing' blobs ---------------------
         visited = set()
-        W, H = self.grid.width, self.grid.height
+        W, H = self.get_width(), self.get_height()
         for y in range(H):
             for x in range(W):
                 if (x, y) in visited or not self._is_type(x, y, "Nothing"):
@@ -527,7 +556,7 @@ class StructuredCityModel(Model):
                     cx, cy = stack.pop()
                     if (cx, cy) in visited or not self._is_type(cx, cy, "Nothing"):
                         continue
-                    visited.add((cx, cy));
+                    visited.add((cx, cy))
                     region.append((cx, cy))
                     for nx, ny in neighbours(cx, cy):
                         if (nx, ny) not in visited and self._is_type(nx, ny, "Nothing"):
@@ -537,28 +566,28 @@ class StructuredCityModel(Model):
                     continue
 
                 # ---- bounding box / quick reject ----
-                min_x = min(pt[0] for pt in region);
+                min_x = min(pt[0] for pt in region)
                 max_x = max(pt[0] for pt in region)
-                min_y = min(pt[1] for pt in region);
+                min_y = min(pt[1] for pt in region)
                 max_y = max(pt[1] for pt in region)
-                width = max_x - min_x + 1;
+                width = max_x - min_x + 1
                 height = max_y - min_y + 1
-                if width < 2 * MIN_SUBBLOCK_SPACING + 1 or \
-                        height < 2 * MIN_SUBBLOCK_SPACING + 1:
+                if width < 2 * self.min_subblock_spacing + 1 or \
+                        height < 2 * self.min_subblock_spacing + 1:
                     continue
 
                 # ---------- pick pivot & orientation ---------------------------
                 for _ in range(20):  # up to 20 attempts
-                    px = random.randint(min_x + MIN_SUBBLOCK_SPACING,
-                                        max_x - MIN_SUBBLOCK_SPACING)
-                    py = random.randint(min_y + MIN_SUBBLOCK_SPACING,
-                                        max_y - MIN_SUBBLOCK_SPACING)
+                    px = random.randint(min_x + self.min_subblock_spacing,
+                                        max_x - self.min_subblock_spacing)
+                    py = random.randint(min_y + self.min_subblock_spacing,
+                                        max_y - self.min_subblock_spacing)
                     hor_dir = random.choice(["W", "E"])
                     ver_dir = random.choice(["N", "S"])
                     small_w = (px - min_x) if hor_dir == "W" else (max_x - px)
                     small_h = (py - min_y) if ver_dir == "S" else (max_y - py)
-                    if small_w >= MIN_SUBBLOCK_SPACING and \
-                            small_h >= MIN_SUBBLOCK_SPACING:
+                    if small_w >= self.min_subblock_spacing and \
+                            small_h >= self.min_subblock_spacing:
                         break
                 else:
                     continue
@@ -574,10 +603,10 @@ class StructuredCityModel(Model):
 
                 # ---------- carve horizontal leg --------------------------------
                 if hor_dir == "W":
-                    xs = range(px - 1, min_x - 1, -1);
+                    xs = range(px - 1, min_x - 1, -1)
                     hx_end, hy_end = min_x, py
                 else:
-                    xs = range(px + 1, max_x + 1);
+                    xs = range(px + 1, max_x + 1)
                     hx_end, hy_end = max_x, py
                 h_dir_cells = leg_dir["horizontal"]["in" if inbound_leg == "horizontal"
                 else "out"]
@@ -586,10 +615,10 @@ class StructuredCityModel(Model):
 
                 # ---------- carve vertical leg ----------------------------------
                 if ver_dir == "S":
-                    ys = range(py, min_y - 1, -1);
+                    ys = range(py, min_y - 1, -1)
                     vx_end, vy_end = px, min_y
                 else:
-                    ys = range(py, max_y + 1);
+                    ys = range(py, max_y + 1)
                     vx_end, vy_end = px, max_y
                 v_dir_cells = leg_dir["vertical"]["in" if inbound_leg == "vertical"
                 else "out"]
@@ -597,21 +626,21 @@ class StructuredCityModel(Model):
                     lay_r4_cell(px, vy, v_dir_cells)
 
                 # ---------- configure pivot (corner) ----------------------------
-                pivot = self.grid.get_cell_list_contents((px, py))[0]  # R4
+                pivot = self.cell_contents(px, py)[0]  # R4
                 pivot.directions = [h_dir_cells if outbound_leg == "horizontal"
                                     else v_dir_cells]  # single outbound arrow
 
                 # ---------- extend legs out to road -----------------------------
                 # horizontal extension
                 arrow_h = h_dir_cells  # arrow on extension
-                extend_to_road(hx_end + DIR_VEC[hor_dir][0],
-                               hy_end + DIR_VEC[hor_dir][1],
+                extend_to_road(hx_end + dir_vec[hor_dir][0],
+                               hy_end + dir_vec[hor_dir][1],
                                hor_dir, arrow_h)
 
                 # vertical extension
                 arrow_v = v_dir_cells
-                extend_to_road(vx_end + DIR_VEC[ver_dir][0],
-                               vy_end + DIR_VEC[ver_dir][1],
+                extend_to_road(vx_end + dir_vec[ver_dir][0],
+                               vy_end + dir_vec[ver_dir][1],
                                ver_dir, arrow_v)
 
                 # ---------- surround pivot with sidewalk ------------------------
@@ -619,8 +648,8 @@ class StructuredCityModel(Model):
                                (1, 1), (-1, 1), (1, -1), (-1, -1)):
                     nx, ny = px + dx, py + dy
                     if self._in_bounds(nx, ny):
-                        nag = self.grid.get_cell_list_contents((nx, ny))[0]
-                        if nag.cell_type not in ROAD and nag.cell_type != "Wall":
+                        nag = self.cell_contents(nx, ny)[0]
+                        if nag.cell_type not in road and nag.cell_type != "Wall":
                             self._replace_cell(nx, ny, "Sidewalk", f"Sidewalk_{nx}_{ny}")
 
     # -----------------------------------------------------------------------
@@ -628,7 +657,7 @@ class StructuredCityModel(Model):
     # -----------------------------------------------------------------------
     def _flood_fill_blocks_storing_data(self):
         visited = set()
-        w, h = self.grid.width, self.grid.height
+        w, h = self.get_width(), self.get_height()
 
         for y in range(h):
             for x in range(w):
@@ -663,7 +692,7 @@ class StructuredCityModel(Model):
                 if w_bb < 3 or h_bb < 3:
                     block_type = "Empty"
                 else:
-                    if random.random() < (1 - EMPTY_BLOCK_CHANGE):
+                    if random.random() < (1 - self.empty_block_chance):
                         block_type = random.choice(["Residential", "Office", "Market", "Leisure"])
                     else:
                         block_type = "Empty"
@@ -704,9 +733,9 @@ class StructuredCityModel(Model):
         changed = True
         while changed:
             changed = False
-            for y in range(self.grid.height):
-                for x in range(self.grid.width):
-                    ags = self.grid.get_cell_list_contents((x, y))
+            for y in range(self.get_height()):
+                for x in range(self.get_width()):
+                    ags = self.cell_contents(x, y)
                     if not ags:
                         continue
                     ctype = ags[0].cell_type
@@ -721,7 +750,7 @@ class StructuredCityModel(Model):
         results = []
         for (nx, ny) in [(x+1,y),(x-1,y),(x,y+1),(x,y-1)]:
             if self._in_bounds(nx, ny):
-                ags = self.grid.get_cell_list_contents((nx, ny))
+                ags = self.cell_contents(nx, ny)
                 if ags and ags[0].cell_type in road_types:
                     results.append((nx, ny))
         return results
@@ -732,9 +761,9 @@ class StructuredCityModel(Model):
         This increases connectivity by turning such R2 blocks into intersections.
         However, if an R2 initial road is used, the forced corner cells are excluded.
         """
-        for y in range(self.grid.height):
-            for x in range(self.grid.width):
-                ags = self.grid.get_cell_list_contents((x, y))
+        for y in range(self.get_height()):
+            for x in range(self.get_width()):
+                ags = self.cell_contents(x, y)
                 if not ags:
                     continue
                 agent = ags[0]
@@ -750,7 +779,7 @@ class StructuredCityModel(Model):
                         forced_right = range(self.vertical_bands[-1][0], self.vertical_bands[-1][1] + 1)
                         # If the cell lies in any of the four forced corner blocks,
                         # skip the conversion to intersection.
-                        if ((y in forced_bottom or y in forced_top) and (x in forced_left or x in forced_right)):
+                        if (y in forced_bottom or y in forced_top) and (x in forced_left or x in forced_right):
                             continue
 
                     sidewalk_count = 0
@@ -758,7 +787,7 @@ class StructuredCityModel(Model):
                     for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
                         nx, ny = x + dx, y + dy
                         if self._in_bounds(nx, ny):
-                            neighbor_ags = self.grid.get_cell_list_contents((nx, ny))
+                            neighbor_ags = self.cell_contents(nx, ny)
                             if neighbor_ags and neighbor_ags[0].cell_type == "Sidewalk":
                                 sidewalk_count += 1
                     # If two or more sides have sidewalk, convert to an intersection.
@@ -787,7 +816,7 @@ class StructuredCityModel(Model):
             # pick one, make it a BlockEntrance
             cx, cy = random.choice(road_candidates)
             self._replace_cell(cx, cy, "BlockEntrance", f"BlockEntrance_{cx}_{cy}")
-            agent = self.grid.get_cell_list_contents((cx, cy))[0]
+            agent = self.cell_contents(cx, cy)[0]
 
             # annotate and track
             agent.block_id   = info["block_id"]
@@ -802,9 +831,9 @@ class StructuredCityModel(Model):
         road_types = {"R1", "R2", "R3", "R4", "Intersection", "HighwayEntrance"}
         intersection_types = {"Intersection"}
 
-        for y in range(self.grid.height):
-            for x in range(self.grid.width):
-                ags = self.grid.get_cell_list_contents((x, y))
+        for y in range(self.get_height()):
+            for x in range(self.get_width()):
+                ags = self.cell_contents(x, y)
                 if not ags:
                     continue
                 agent = ags[0]
@@ -826,7 +855,7 @@ class StructuredCityModel(Model):
                         if not self._in_bounds(nx, ny):
                             continue
 
-                        neighbor_ags = self.grid.get_cell_list_contents((nx, ny))
+                        neighbor_ags = self.cell_contents(nx, ny)
                         if not neighbor_ags:
                             continue
                         neighbor_type = neighbor_ags[0].cell_type
@@ -847,14 +876,26 @@ class StructuredCityModel(Model):
 
     def _next_cell_in_direction(self, x, y, d):
         if d == "N":
-            return (x, y+1)
+            return x, y + 1
         elif d == "S":
-            return (x, y-1)
+            return x, y - 1
         elif d == "E":
-            return (x+1, y)
+            return x + 1, y
         elif d == "W":
-            return (x-1, y)
-        return (x, y)
+            return x - 1, y
+        return x, y
+
+    def _is_next_cell_direction_an_intersecton(self, x, y, d):
+        xd, yd = self._next_cell_in_direction(x, y, d)
+        next_cell = self.cell_contents(xd, yd)[0]
+        return next_cell.cell_type == "Intersection"
+
+    def _opposite_dir(self, d):
+        if d == "N": return "S"
+        if d == "S": return "N"
+        if d == "E": return "W"
+        if d == "W": return "E"
+        return d
 
     # -----------------------------------------------------------------------
     # (8B) Ensure roads next to a block entrance have direction in
@@ -863,11 +904,9 @@ class StructuredCityModel(Model):
     def _add_entrance_directions(self):
         road_types = {"R1", "R2", "R3", "R4", "Intersection", "HighwayEntrance"}
 
-        opposite = {"N": "S", "S": "N", "E": "W", "W": "E"}
-
-        for y in range(self.grid.height):
-            for x in range(self.grid.width):
-                ags = self.grid.get_cell_list_contents((x, y))
+        for y in range(self.get_height()):
+            for x in range(self.get_width()):
+                ags = self.cell_contents(x, y)
                 if not ags:
                     continue
                 agent = ags[0]
@@ -877,7 +916,7 @@ class StructuredCityModel(Model):
                     # for each neighboring road, point both ways:
                     for (nx, ny) in [(x+1,y),(x-1,y),(x,y+1),(x,y-1)]:
                         if self._in_bounds(nx, ny):
-                            nags = self.grid.get_cell_list_contents((nx, ny))
+                            nags = self.cell_contents(nx, ny)
                             if nags and nags[0].cell_type in road_types:
                                 road_agent = nags[0]
                                 dx = x - nx
@@ -896,7 +935,7 @@ class StructuredCityModel(Model):
                                 if needed_dir not in road_agent.directions:
                                     road_agent.directions.append(needed_dir)
                                 # and _invert_ it for the BlockEntrance itself
-                                entrance_dirs.append(opposite[needed_dir])
+                                entrance_dirs.append(self._opposite_dir(needed_dir))
                     agent.directions = entrance_dirs
 
 
@@ -917,12 +956,7 @@ class StructuredCityModel(Model):
         the right (east edge) of the interior.
         """
 
-        def opposite_dir(d):
-            if d == "N": return "S"
-            if d == "S": return "N"
-            if d == "E": return "W"
-            if d == "W": return "E"
-            return d
+
 
         bands = []
         current = start_coord
@@ -938,12 +972,12 @@ class StructuredCityModel(Model):
 
             if orientation == "horizontal":
                 if rtype == "R3" and last_r3_dir is not None:
-                    bdir = opposite_dir(last_r3_dir)
+                    bdir = self._opposite_dir(last_r3_dir)
                 else:
                     bdir = random.choice(["E", "W"])
             else:
                 if rtype == "R3" and last_r3_dir is not None:
-                    bdir = opposite_dir(last_r3_dir)
+                    bdir = self._opposite_dir(last_r3_dir)
                 else:
                     bdir = random.choice(["N", "S"])
             bands.append((bstart, bend, rtype, bdir))
@@ -956,7 +990,7 @@ class StructuredCityModel(Model):
             next_pos = bend + 1
             if next_pos > end_coord:
                 break
-            block_size = random.randint(MIN_BLOCK_SPACING, MAX_BLOCK_SPACING)
+            block_size = random.randint(self.min_block_spacing, self.max_block_spacing)
             block_end = next_pos + block_size - 1
             if block_end > end_coord:
                 break
@@ -1025,7 +1059,7 @@ class StructuredCityModel(Model):
         else:
             return "R2" if (random.random() < 0.5) else "R3"
 
-    def _force_one_highway(self, bands, total_size, orientation):
+    def _force_one_highway(self, bands, total_size):
         thick = ROAD_THICKNESS["R1"]
         inset = self._compute_highway_inset()
         start_min = inset
@@ -1040,8 +1074,8 @@ class StructuredCityModel(Model):
         bands.append((hw_start, hw_end, "R1", ""))
         bands.sort(key=lambda b: b[0])
 
-        skip_low  = hw_start - MIN_BLOCK_SPACING
-        skip_high = hw_end   + MIN_BLOCK_SPACING
+        skip_low  = hw_start - self.min_block_spacing
+        skip_high = hw_end   + self.min_block_spacing
         new_bands = []
         for (st, en, rt, bdir) in bands:
             if rt == "R1" and (st, en) == (hw_start, hw_end):
@@ -1055,10 +1089,10 @@ class StructuredCityModel(Model):
     def _find_band_covering(self, index, bands):
         for (st, en, rtype, bdir) in bands:
             if st <= index <= en:
-                return (st, en, rtype, bdir)
+                return st, en, rtype, bdir
         return None
 
-    def _compute_lane_dirs(self, rtype, orientation, offset, band_size, band_dir):
+    def _compute_lane_dirs(self, x, y, rtype, orientation, offset, band_size, band_dir):
         """
         Revised lane direction computation to enforce European right-hand traffic (RHT)
         for R1 and R2 roads.
@@ -1103,9 +1137,11 @@ class StructuredCityModel(Model):
                     main_dir = "E"
                     side_dirs = []
                     # Allow a lane shift (if needed) only if not in the rightmost (offset==0) lane.
-                    if offset > 0:
+                    if (offset > 0
+                            and not self._is_next_cell_direction_an_intersecton (x, y, "S")):
                         side_dirs.append("S")  # shift right (toward south)
-                    if offset < half - 1:
+                    if (offset < half - 1
+                            and not self._is_next_cell_direction_an_intersecton(x, y, "N")):
                         side_dirs.append("N")  # optional left shift (toward north)
                     return [main_dir] + side_dirs
                 else:
@@ -1113,9 +1149,11 @@ class StructuredCityModel(Model):
                     main_dir = "W"
                     side_dirs = []
                     # For westbound, the right-hand lane is the one with the highest offset.
-                    if offset < band_size - 1:
+                    if (offset < band_size - 1
+                            and not self._is_next_cell_direction_an_intersecton(x, y, "N")):
                         side_dirs.append("N")  # shift right (toward north)
-                    if offset > half:
+                    if (offset > half
+                            and not self._is_next_cell_direction_an_intersecton(x, y, "S")):
                         side_dirs.append("S")  # optional left shift (toward south)
                     return [main_dir] + side_dirs
 
@@ -1127,18 +1165,22 @@ class StructuredCityModel(Model):
                     # Southbound group.
                     main_dir = "S"
                     side_dirs = []
-                    if offset > 0:
+                    if (offset > 0
+                            and not self._is_next_cell_direction_an_intersecton (x, y, "W")):
                         side_dirs.append("W")  # shift right (toward west)
-                    if offset < (band_size // 2) - 1:
+                    if (offset < (band_size // 2) - 1
+                            and not self._is_next_cell_direction_an_intersecton (x, y, "E")):
                         side_dirs.append("E")  # optional left shift (toward east)
                     return [main_dir] + side_dirs
                 else:
                     # Northbound group.
                     main_dir = "N"
                     side_dirs = []
-                    if offset < band_size - 1:
+                    if (offset < band_size - 1
+                            and not self._is_next_cell_direction_an_intersecton(x, y, "E")):
                         side_dirs.append("E")  # shift right (toward east)
-                    if offset > band_size // 2:
+                    if (offset > band_size // 2
+                            and not self._is_next_cell_direction_an_intersecton (x, y, "W")):
                         side_dirs.append("W")  # optional left shift (toward west)
                     return [main_dir] + side_dirs
 
@@ -1146,20 +1188,20 @@ class StructuredCityModel(Model):
         return []
 
     def _replace_boundary_highways_with_entrances(self):
-        w, h = self.grid.width, self.grid.height
+        w, h = self.get_width(), self.get_height()
 
         # (1) Collect all cells in the WALL_THICKNESS band
         edge_coords = set()
-        for y in range(WALL_THICKNESS):
+        for y in range(self.wall_thickness):
             for x in range(w):
                 edge_coords.add((x, y))
-        for y in range(h - WALL_THICKNESS, h):
+        for y in range(h - self.wall_thickness, h):
             for x in range(w):
                 edge_coords.add((x, y))
-        for x in range(WALL_THICKNESS):
+        for x in range(self.wall_thickness):
             for y in range(h):
                 edge_coords.add((x, y))
-        for x in range(w - WALL_THICKNESS, w):
+        for x in range(w - self.wall_thickness, w):
             for y in range(h):
                 edge_coords.add((x, y))
 
@@ -1169,7 +1211,7 @@ class StructuredCityModel(Model):
 
         # (2) Replace only the true boundary R1 → HighwayEntrance / Exit
         for (ex, ey) in edge_coords:
-            ags = self.grid.get_cell_list_contents((ex, ey))
+            ags = self.cell_contents(ex, ey)
             if not ags or ags[0].cell_type != "R1":
                 continue
             # must actually be on the very outer edge:
@@ -1186,7 +1228,7 @@ class StructuredCityModel(Model):
 
             # swap it out
             self._replace_cell(ex, ey, new_type, f"{new_type}_{ex}_{ey}")
-            he = self.grid.get_cell_list_contents((ex, ey))[0]
+            he = self.cell_contents(ex, ey)[0]
             he.directions = old_dirs
             he.highway_orientation = (
                 "horizontal" if ey in (0, h - 1) else "vertical"
@@ -1197,7 +1239,6 @@ class StructuredCityModel(Model):
             else:
                 self.highway_exits.append(he)
 
-
     def _add_traffic_lights(self):
         """
         Convert any road‐type cell that points into an Intersection
@@ -1207,67 +1248,98 @@ class StructuredCityModel(Model):
         """
         road_types = {"R1", "R2", "R3", "R4", "HighwayEntrance"}
 
-        w, h = self.grid.width, self.grid.height
-        for x in range(w):
-            for y in range(h):
+        w, h = self.get_width(), self.get_height()
+        for road_block_x in range(w):
+            for road_block_y in range(h):
                 # fetch the only agent here
-                ags = self.grid.get_cell_list_contents((x, y))
+                ags = self.cell_contents(road_block_x, road_block_y)
                 if not ags:
                     continue
-                ag = ags[0]
-                if ag.cell_type not in road_types:
+                road_block = ags[0]
+                if road_block.cell_type not in road_types:
                     continue
 
-                dirs = ag.directions.copy()
-                old_type = ag.cell_type
+                road_directions = road_block.directions.copy()
+                original_road_type = road_block.cell_type
 
                 # check each arrow for an Intersection neighbor
-                for d in dirs:
-                    nx, ny = self._next_cell_in_direction(x, y, d)
+                for d in road_directions:
+                    nx, ny = self._next_cell_in_direction(road_block_x, road_block_y, d)
                     if not self._in_bounds(nx, ny):
                         continue
-                    neigh = self.grid.get_cell_list_contents((nx, ny))[0]
-                    if neigh.cell_type != "Intersection":
+                    road_lead_to = self.cell_contents(nx, ny)[0]
+                    if road_lead_to.cell_type != "Intersection":
                         continue
 
                     # → convert to ControlledRoad
-                    self._replace_cell(x, y, "ControlledRoad", f"ControlledRoad_{x}_{y}")
-                    ctrl = self.grid.get_cell_list_contents((x, y))[0]
-                    ctrl.directions = dirs
-                    ctrl.status = "Pass"
-                    ctrl.base_color = ZONE_COLORS.get(old_type)
-                    self.controlled_roads.append(ctrl)
+                    self._replace_cell(road_block_x, road_block_y, "ControlledRoad", f"ControlledRoad_{road_block_x}_{road_block_y}")
+                    controlled_road = self.cell_contents(road_block_x, road_block_y)[0]
+                    controlled_road.directions = road_directions
+                    controlled_road.status = "Pass"
+                    controlled_road.base_color = ZONE_COLORS.get(original_road_type)
+                    self.controlled_roads.append(controlled_road)
 
-                    # → carve lights on every adjoining sidewalk
-                    for sx, sy in [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]:
-                        if not self._in_bounds(sx, sy):
-                            continue
-                        neigh2 = self.grid.get_cell_list_contents((sx, sy))[0]
-                        if neigh2.cell_type != "Sidewalk":
-                            continue
+                    # → carve lights on every adjoining sidewalk (or controlled‑road neighbor)
+                    for lead_to_x, lead_to_y in [(road_block_x + 1, road_block_y), (road_block_x - 1, road_block_y), (road_block_x, road_block_y + 1), (road_block_x, road_block_y - 1)]:
+                        if self._in_bounds(lead_to_x, lead_to_y):
+                            scanned_lead_to = self.cell_contents(lead_to_x, lead_to_y)[0]  # grab the single agent
 
-                        # replace with a TrafficLight
-                        self._replace_cell(sx, sy, "TrafficLight", f"TrafficLight_{sx}_{sy}")
-                        tl = self.grid.get_cell_list_contents((sx, sy))[0]
-                        tl.status = "Pass"
-                        tl.controlled_road = ctrl
-                        ctrl.lights.append(tl)
-                        self.traffic_lights.append(tl)
+                            # ── if it's a ControlledRoad, look one more cell out in that same direction ──
+                            if scanned_lead_to.cell_type == "ControlledRoad" or scanned_lead_to.cell_type == original_road_type:
+                                # compute direction vector from (x,y) → (sx,sy)
+                                dx, dy = lead_to_x - road_block_x, lead_to_y - road_block_y
+                                fx, fy = lead_to_x + dx, lead_to_y + dy
+                                if self._in_bounds(fx, fy):
+                                    neigh3 = self.cell_contents(fx, fy)[0]
+                                    # assign the same traffic light to that further block
+                                    self._assign_traffic_light(controlled_road, neigh3,
+                                                               original_road_type, road_directions,
+                                                               fx, fy)
 
-                        # ray‑cast out along the light’s own arrows to find block entrances
-                        for dd in tl.directions:
-                            bx, by = sx, sy
-                            while True:
-                                bx, by = self._next_cell_in_direction(bx, by, dd)
-                                if not self._in_bounds(bx, by):
-                                    break
-                                nb = self.grid.get_cell_list_contents((bx, by))[0]
-                                if nb.cell_type == "BlockEntrance":
-                                    tl.controlled_blocks.append(nb.block_id)
-                                    break
-
+                            self._assign_traffic_light(controlled_road, scanned_lead_to,
+                                                       original_road_type, road_directions,
+                                                       lead_to_x, lead_to_y)
                     # only one set of lights per road cell
                     break
+
+    def _assign_traffic_light(self, controlled_road, aspiring_traffic_light, original_road_type,
+                              scanning_directions, x, y):
+
+        if aspiring_traffic_light.cell_type != "Sidewalk" and aspiring_traffic_light.cell_type != "TrafficLight":
+            return
+
+        if aspiring_traffic_light.cell_type == "TrafficLight":
+            tl = aspiring_traffic_light
+        elif aspiring_traffic_light.cell_type == "Sidewalk":
+            # replace with a TrafficLight
+            self._replace_cell(x, y, "TrafficLight", f"TrafficLight_{x}_{y}")
+            tl = self.cell_contents(x, y)[0]
+            self.traffic_lights.append(tl)
+            tl.status = "Pass"
+
+        controlled_road.light = tl
+        tl.controlled_blocks.append(controlled_road)
+
+        self._scan_for_traffic_flow(controlled_road, scanning_directions, original_road_type, tl, 0)
+
+    def _scan_for_traffic_flow(self, road, scanning_directions, original_road_type, traffic_light, scan_depth):
+
+        reversed_directions = []
+        for fd in scanning_directions:
+            reversed_directions.append(self._opposite_dir(fd))
+
+        # ray‑cast out along the light’s own arrows to find block entrances
+        for rd in reversed_directions:
+            ctrl_x, ctrl_y = road.get_position()
+            while scan_depth <= self.traffic_light_range:
+                scan_depth += 1
+                bx, by = self._next_cell_in_direction(ctrl_x, ctrl_y, rd)
+                if self._in_bounds(bx, by):
+                    nb = self.cell_contents(bx, by)[0]
+                    if nb.cell_type == original_road_type and nb.leads_to(road):
+                        traffic_light.assigned_road_blocks.append(nb)
+                        nb.light = traffic_light
+                        self._scan_for_traffic_flow(nb, nb.directions, nb.cell_type, traffic_light, scan_depth)
 
     # -----------------------------------------------------------------------
     # Utilities
@@ -1281,7 +1353,7 @@ class StructuredCityModel(Model):
         x, y = cell
         for nx, ny in [(x+1, y), (x-1, y), (x, y+1), (x, y-1)]:
             if self._in_bounds(nx, ny):
-                ags = self.grid.get_cell_list_contents((nx, ny))
+                ags = self.cell_contents(nx, ny)
                 if ags and ags[0].cell_type in [
                     "R1", "R2", "R3", "Intersection", "HighwayEntrance", "ControlledRoad"
                 ]:
@@ -1290,7 +1362,7 @@ class StructuredCityModel(Model):
 
 
     def _replace_cell(self, x, y, new_type, new_id):
-        old_list = self.grid.get_cell_list_contents((x, y))
+        old_list = self.cell_contents(x, y)
         for oa in old_list:
             self.grid.remove_agent(oa)
             self.schedule.remove(oa)
@@ -1299,11 +1371,11 @@ class StructuredCityModel(Model):
         self.schedule.add(ag)
 
     def _is_type(self, x, y, ctype):
-        ags = self.grid.get_cell_list_contents((x, y))
+        ags = self.cell_contents(x, y)
         return bool(ags and ags[0].cell_type == ctype)
 
     def _in_bounds(self, x, y):
-        return (0 <= x < self.grid.width) and (0 <= y < self.grid.height)
+        return (0 <= x < self.get_width()) and (0 <= y < self.get_height())
 
     def _inside_interior(self, x, y):
         return (self.interior_x_min <= x <= self.interior_x_max) and \
@@ -1313,6 +1385,19 @@ class StructuredCityModel(Model):
         self.schedule.step()
 
     # — Convenience getters —
+
+    def cell_contents(self, x: int, y: int) -> List[CellAgent]:
+        """
+        Return the list of CellAgent in the given [x, y] cell.
+        """
+        # We know this grid only ever holds CellAgent instances
+        return self.grid.get_cell_list_contents([(x, y)])  # type: ignore[return-value]
+
+    def get_width(self) -> int:
+        return self.grid.width
+
+    def get_height(self) -> int:
+        return self.grid.height
 
     def get_block_entrances(self):
         return self.block_entrances
@@ -1328,3 +1413,11 @@ class StructuredCityModel(Model):
 
     def get_traffic_lights(self):
         return self.traffic_lights
+
+    def set_traffic_lights_go(self):
+        for tl in self.traffic_lights:
+            tl.set_light_go()
+
+    def set_traffic_lights_stop(self):
+        for tl in self.traffic_lights:
+            tl.set_light_stop()

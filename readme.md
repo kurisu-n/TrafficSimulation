@@ -1,80 +1,125 @@
-# Structured Urban Grid World Simulation
+# Structured Urban Grid World
 
-A procedural city generation and simulation built with Mesa (an agent‑based modeling framework). This project generates a grid‑based city with roads, sidewalks, blocks, traffic lights, and block entrances, and provides an interactive web interface to inspect individual cells and block entrances.
+A world-building engine for simulating a realistic urban environment using the **Mesa** agent-based modeling framework. This module focuses **only** on procedural generation of the city layout (walls, sidewalks, roads, intersections, blocks, and traffic-light infrastructure). Dynamic agent behaviors (vehicles, pedestrians, etc.) can be added separately.
 
-## Features
+---
 
-- **Procedural City Generation**: Creates walls, sidewalks, roads (multiple types), intersections, sub‑block roads, and block entrances.
-- **Cell Agents**: Each grid cell is an agent (`CellAgent`) storing type, directions, status, and extra metadata (occupied, block ID/type, highway info, controlled blocks).
-- **Interactive Visualization**: A left‑hand inspector pane displays cell details on click, alongside a CanvasGrid rendering of the city.
-- **Traffic Control**: Traffic lights and controlled roads automatically placed at intersections; block entrances detected and displayed.
+## 🚀 Table of Contents
 
-## Prerequisites
+- [🔍 Features](#-features)
+- [📦 Installation](#-installation)
+  - [Git & pip](#git--pip)
+  - [Conda Environment](#conda-environment)
+- [▶️ Usage](#usage)
+- [⚙️ Configuration](#-configuration)
+- [📁 Code Structure](#-code-structure)
+  - [World Building](#world-building)
+  - [Visualization Parameters](#visualization-parameters)
+  - [Traffic Light Control UI](#traffic-light-control-ui)
+  - [Server Setup](#server-setup)
+  - [Launcher](#launcher)
+- [🛠 Extending with Agent Logic](#-extending-with-agent-logic)
 
-- Python 3.8+ (tested on 3.10)
-- Conda (recommended) or virtualenv
+---
 
-## Setup
+## 🔍 Features
 
-1. **Clone the repository**
+### Procedural City Layout
+- Boundary walls & inner sidewalk rings
+- Randomized network: highways (R1), major (R2), local (R3), and sub-block (R4) roads
+- Optimized vs. full intersections
+- Flood-fill zoning: Residential, Office, Market, Leisure, or Empty
+- Block entrances automatically aligned to roads
+- Optional L-shaped sub-block roads
+
+### Traffic Infrastructure
+- Traffic-light placement adjacent to intersections
+- Controlled-road identification and status toggling
+
+### Interactive Web UI
+- Adjustable parameters via sliders/checkboxes
+- CanvasGrid visualization & custom traffic-light controls
+
+---
+
+## 📦 Installation
+
+**Prerequisites:** Python 3.10, Git, pip or Conda.
+
+---
+
+## ▶️ Usage
+
+1. Launch the server:
 
    ```bash
-   git clone https://github.com/yourusername/city-grid-simulation.git
-   cd city-grid-simulation
-   ```
+   python run.py
 
-2. **Create and activate a conda environment**
+---
 
-   ```bash
-   conda create -n city-sim python=3.10
-   conda activate city-sim
-   ```
+## ⚙️ Configuration
 
-3. **Install dependencies**
+On the left-side panel of the web UI, tweak parameters such as:
 
-   - Install the Mesa agent‑based framework and visualization extras:
-     ```bash
-     pip install mesa[rec] pygments ipywidgets
-     ```
+- **Grid Width / Height**
+- **Wall Thickness**
+- **Sidewalk Ring Width**
+- **Road Types & Spacing**
+- **Block Size & Empty-Block Chance**
+- **Carve Sub-block Roads**
+- **Traffic Light Range**
 
-   If you prefer conda, you can also do:
-   ```bash
-   conda install mesa
-   ```
+Changes apply upon resetting or restarting the model.
 
-4. **Verify installation**
+---
 
-   ```bash
-   python -c "import mesa; print(mesa.__version__)"
-   ```
+## 📁 Code Structure
 
-## Running the Simulation
+### World Building
 
-1. **Launch the server**
+- `agents.py`: `CellAgent` defines each grid cell (walls, sidewalks, roads, intersections, zones, traffic lights). Includes utilities for positioning, directions, and portrayal.
+- `model.py`: `CityModel` orchestrates environment generation:
+  1. Place boundary walls & sidewalk rings
+  2. Clear interior to “Nothing”
+  3. Generate road bands (including forced highways)
+  4. Create optimized/non-optimized intersections
+  5. Flood-fill and zone interior blocks
+  6. Carve optional sub-block (R4) roads
+  7. Eliminate dead-ends
+  8. Upgrade roads to intersections
+  9. Place block entrances
+  10. Validate & clean intersection directions
+  11. Add traffic lights & link controlled roads
 
-   ```bash
-   python server.py
-   ```
+### Visualization Parameters
 
-2. **Open your browser** at the URL printed in the console (e.g., `http://localhost:8521`).
-3. **Interact** with the grid:
-   - Click on any cell to inspect its type, directions, status, and related metadata.
-   - Click on a block entrance in the inspector pane to highlight its location on the grid.
+- `parameters.py`: Defines sliders, choices, and checkboxes for all tunable parameters in the Mesa UI.
 
-## Project Structure
+### Traffic Light Control UI
 
-```
-├─ server.py           # Starts the Mesa server and handles orchestrating modules
-├─ creation.py         # Contains the StructuredCityModel building the grid and roads
-├─ cell.py             # Defines CellAgent, portrayal functions, and utility methods
-└─ README.md           # This file
-```
+- `ui_elements.py`: Custom Mesa `TextElement` that renders a dropdown of traffic lights plus **Go/Stop** buttons for individual or global control. Backed by Tornado request handlers.
 
-## Customization
+### Server Setup
 
-- **Grid size**: Modify `GRID_WIDTH` and `GRID_HEIGHT` in `creation.py` and `server.py`.
-- **Road parameters**: Tweak constants (e.g. `ROAD_THICKNESS`, `MIN_BLOCK_SPACING`, `SUBBLOCK_CHANCE`) in `creation.py`.
-- **Visualization**:
-  - Swap between `cellinspector.py` (Python‑only inspector) or `infopane.py` (JS inspector) in `server.py`.
+- `server.py`:
+  - Configures a `CanvasGrid` with the cell portrayal function
+  - Initializes `ModularServer` with `CityModel` and visualization modules
+  - Adds HTTP routes for traffic-light endpoints
+  - Dynamically binds to an available localhost port
 
+### Launcher
 
+- `run.py`: Imports and launches the Mesa server, printing the local URL.
+
+---
+
+## 🛠 Extending with Agent Logic
+
+To simulate dynamics (vehicles, pedestrians):
+
+1. **Create Agent Classes** (e.g., `VehicleAgent`, `PedestrianAgent`)
+2. **Implement** `step()` **methods** for movement, pathfinding, and interactions
+3. **Schedule & Place** agents in `CityModel.schedule` and on the grid
+4. **Customize Visualization**: add new portrayal functions or modules
+
+---

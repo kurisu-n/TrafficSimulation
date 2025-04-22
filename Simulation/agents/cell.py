@@ -36,18 +36,21 @@ ZONE_COLORS = {
     "R3": "darkgreen",
     "Sidewalk": "grey",
     "Intersection": "yellow",
-    "BlockEntrance": "red",
+    "BlockEntrance": "magenta",
     "HighwayEntrance": "royalblue",
     "HighwayExit": "blue",
-    "TrafficLight":"magenta",
+    "TrafficLight":"lime",
+    "TrafficLightStop":"red",
     "ControlledRoad":"thistle",
-    "ControlledRoadClosed":"crimson",
+    "ControlledRoadStop":"salmon",
     "Wall": "black",
     "Other": "white",
     "Nothing":"white"
 }
 
 DIRECTION_ICONS = {"N":"↑","S":"↓","E":"→","W":"←"}
+
+ROADS = ["R1","R2","R3"]
 
 class CellAgent(Agent):
     """
@@ -75,8 +78,8 @@ class CellAgent(Agent):
         self.highway_orientation = None
 
         # for intersections controlled by traffic lights:
-        self.lights = []
-        self.controlled_road = None
+        self.light = None
+        self.assigned_road_blocks = []
         self.controlled_blocks = []
 
     def step(self):
@@ -115,6 +118,43 @@ class CellAgent(Agent):
     def is_traffic_light(self):
         return self.cell_type == "TrafficLight"
 
+    def leads_to(self, other: "CellAgent", visited=None) -> bool:
+        """
+        Return True if there is a directed path of road‐arrows from self to other.
+        Searches successors following each arrow in self.directions.
+        """
+        if visited is None:
+            visited = set()
+        # If we’ve arrived…
+        if self is other:
+            return True
+        visited.add(self)
+        # Explore every outgoing arrow
+        x, y = self.get_position()
+        for d in self.directions:
+            nx, ny = self.model._next_cell_in_direction(x, y, d)
+            if not self.model._in_bounds(nx, ny):
+                continue
+            nbr = self.model.grid.get_cell_list_contents((nx, ny))[0]
+            if nbr in visited:
+                continue
+            if nbr.leads_to(other, visited):
+                return True
+        return False
+
+    def set_light_go(self):
+        if self.is_traffic_light():
+            self.status = "Pass"
+            for controlled_block in self.controlled_blocks:
+                controlled_block.status = "Pass"
+
+    def set_light_stop(self):
+        if self.is_traffic_light():
+            self.status = "Stop"
+            for controlled_block in self.controlled_blocks:
+                controlled_block.status = "Stop"
+
+
 
 def agent_portrayal(agent):
     arrows = [DIRECTION_ICONS.get(d, '') for d in agent.directions]
@@ -145,14 +185,34 @@ def agent_portrayal(agent):
         "Color": agent.base_color,
         "Layer": 0,
         "Type": agent.cell_type,
-        "Description": desc_map.get(agent.cell_type, "")
+        "Description": desc_map.get(agent.cell_type, ""),
     }
+
+    if agent.cell_type in ROADS:
+        portrayal["Assigned"] = agent.light is not None
+        portrayal["Color"] = (
+            desaturate(agent.base_color, sat_factor=0.75, light_factor=0.25)
+            if agent.light is not None and agent.light.status == "Stop"
+            else agent.base_color
+        )
+
     if agent.cell_type=="ControlledRoad":
         portrayal["Color"] = (
-            ZONE_COLORS["ControlledRoadClosed"]
+            ZONE_COLORS["ControlledRoadStop"]
             if agent.status=="Stop"
             else desaturate(agent.base_color, sat_factor=0.75, light_factor=0.25)
         )
+        portrayal["Control State"] = agent.status
+
+    if agent.cell_type =="TrafficLight":
+        portrayal["Color"] = (
+            ZONE_COLORS["TrafficLightStop"]
+            if agent.status == "Stop"
+            else ZONE_COLORS["TrafficLight"]
+        )
+
+
+
     if direction_text:
         portrayal["Directions"] = direction_text
     return portrayal
