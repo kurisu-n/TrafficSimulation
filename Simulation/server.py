@@ -4,10 +4,10 @@ import socket
 from mesa.visualization.modules import CanvasGrid
 from mesa.visualization.ModularVisualization import ModularServer
 
-from visualization.model_parameters import model_params_mesa
-from visualization.traffic_light_control import SetGoHandler, SetStopHandler, SetSingleGoHandler, SetSingleStopHandler, TrafficLightControl
-from city_model import CityModel, GRID_WIDTH, GRID_HEIGHT
-from agents.cell import agent_portrayal
+from Simulation.visualization.model_parameters import model_params_mesa
+from Simulation.visualization.traffic_light_control import SetGoHandler, SetStopHandler, SetSingleGoHandler, SetSingleStopHandler, TrafficLightControl
+from Simulation.city_model import CityModel, GRID_WIDTH, GRID_HEIGHT
+from Simulation.agents.cell import agent_portrayal
 
 def get_free_port(default=8000, max_tries=100):
     for offset in range(max_tries):
