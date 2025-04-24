@@ -7,6 +7,8 @@ from mesa.time import RandomActivation
 from typing import List
 
 from Simulation.agents.cell import CellAgent, ZONE_COLORS
+from Simulation.agents.intersection_light_group import IntersectionLightGroup
+
 
 GRID_WIDTH = 100
 GRID_HEIGHT = 100
@@ -82,7 +84,8 @@ class CityModel(Model):
         self.highway_offset_from_edges = highway_offset_from_edges
         self.traffic_light_range = traffic_light_range
 
-        self.user_selected_traffic_light = None;
+        self.user_selected_traffic_light = None
+        self.user_selected_intersection = None
 
         self.grid = MultiGrid(self.width, self.height, torus=False)
         self.schedule = RandomActivation(self)
@@ -102,6 +105,7 @@ class CityModel(Model):
         self.highway_exits     = []
         self.controlled_roads  = []
         self.traffic_lights    = []
+        self.intersection_light_groups = []
 
         # build sequence
         self._place_thick_wall()
@@ -119,6 +123,7 @@ class CityModel(Model):
         self._remove_invalid_intersection_directions()
         self._add_entrance_directions()
         self._add_traffic_lights()
+        self._create_intersection_light_groups()
 
     # -------------------------------------------------------------------
     #  Generic intersection factory (optimised + sub‑block aware)
@@ -1376,6 +1381,61 @@ class CityModel(Model):
                         nb.light = traffic_light
                         self._scan_for_traffic_flow(nb, nb.directions, nb.cell_type, traffic_light, scan_depth)
 
+    def _create_intersection_light_groups(self) -> None:
+        """Scan every *contiguous* block of Intersection cells, work out its
+        outer bounding box and collect the lights that sit on the four diagonal
+        sidewalk corners.  Each quartet becomes one IntersectionLightGroup."""
+
+        visited = set()
+        comp_idx = 0
+
+        for seed in getattr(self, "_intersection_cells", []):
+            if seed in visited:
+                continue
+
+            # ── flood-fill the whole block of Intersection cells ──────────
+            stack = [seed]
+            cluster = []
+            while stack:
+                x, y = stack.pop()
+                if (x, y) in visited or (x, y) not in self._intersection_cells:
+                    continue
+                visited.add((x, y))
+                cluster.append((x, y))
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    nx, ny = x + dx, y + dy
+                    if (nx, ny) in self._intersection_cells and (nx, ny) not in visited:
+                        stack.append((nx, ny))
+
+            # nothing to group
+            if not cluster:
+                continue
+
+            # ── bounding box & corner-coords (one cell outside) ───────────
+            min_x = min(p[0] for p in cluster)
+            max_x = max(p[0] for p in cluster)
+            min_y = min(p[1] for p in cluster)
+            max_y = max(p[1] for p in cluster)
+
+            corner_cells = [(min_x - 1, min_y - 1), (max_x + 1, min_y - 1),
+                            (min_x - 1, max_y + 1), (max_x + 1, max_y + 1)]
+
+            lights = []
+            for cx, cy in corner_cells:
+                if not self._in_bounds(cx, cy):
+                    continue
+                ags = self.cell_contents(cx, cy)
+                if ags and ags[0].cell_type == "TrafficLight":
+                    lights.append(ags[0])
+
+            if not lights:  # no lights ⇒ nothing to create
+                continue
+
+            comp_idx += 1
+            group = IntersectionLightGroup(f"Intersection_{comp_idx}", self, lights)
+            self.intersection_light_groups.append(group)
+            self.schedule.add(group)  # optional, keeps API consistent
+
     # -----------------------------------------------------------------------
     # Utilities
     # -----------------------------------------------------------------------
@@ -1456,3 +1516,14 @@ class CityModel(Model):
     def set_traffic_lights_stop(self):
         for tl in self.traffic_lights:
             tl.set_light_stop()
+
+    def get_intersection_light_groups(self):
+        return self.intersection_light_groups
+
+    def set_intersections_go(self):
+        for Intersection in self.intersection_light_groups:
+            Intersection.set_go()
+
+    def set_intersections_stop(self):
+        for Intersection in self.intersection_light_groups:
+            Intersection.set_stop()

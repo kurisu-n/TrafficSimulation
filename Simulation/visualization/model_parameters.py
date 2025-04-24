@@ -150,7 +150,7 @@ model_params_mesa = {
     "_hdr_control": h("Traffic control"),
     sp_key(): spacer(),
     "subblock_roads_have_intersections": mesa.visualization.Checkbox(
-        name="R4 roads can intersect", value=False,
+        name="Subblock roads can intersect", value=False,
     ),
     sp_key(): spacer(),
     "optimized_intersections": mesa.visualization.Checkbox(
