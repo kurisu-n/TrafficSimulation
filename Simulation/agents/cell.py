@@ -30,6 +30,7 @@ ZONE_COLORS = {
     "Office": "orange",
     "Market": "green",
     "Leisure": "palevioletred",
+    "Other": "darkkhaki",
     "Empty":"papayawhip",
     "R1": "dodgerblue",
     "R2": "saddlebrown",
@@ -44,7 +45,6 @@ ZONE_COLORS = {
     "ControlledRoad":"thistle",
     "ControlledRoadStop":"salmon",
     "Wall": "black",
-    "Other": "white",
     "Nothing":"white"
 }
 
@@ -164,6 +164,7 @@ def agent_portrayal(agent):
         "Office": "Office City Block",
         "Market": "Market City Block",
         "Leisure": "Leisure City Block",
+        "Other": "Miscellaneous City Block",
         "Empty": "Empty City Block",
         "R1": "Highway (4 Lanes, 2/Dir)",
         "R2": "Major Road (2 Lanes, 1/Dir)",
@@ -177,7 +178,6 @@ def agent_portrayal(agent):
         "TrafficLight":"Intersection Traffic Light",
         "ControlledRoad":"Road Controlled by Traffic Light",
         "Wall": "Outer Wall",
-        "Other": "Unknown",
         "Nothing":"Empty/unused space",
     }
     portrayal = {

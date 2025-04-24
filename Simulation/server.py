@@ -5,7 +5,7 @@ from mesa.visualization.modules import CanvasGrid
 from mesa.visualization.ModularVisualization import ModularServer
 
 from Simulation.visualization.model_parameters import model_params_mesa
-from Simulation.visualization.traffic_light_control import SetGoHandler, SetStopHandler, SetSingleGoHandler, SetSingleStopHandler, TrafficLightControl
+from Simulation.visualization.traffic_light_control import SetGoHandler, SetStopHandler, SetSingleGoHandler, SetSingleStopHandler, TrafficLightControl, add_traffic_light_routes
 from Simulation.city_model import CityModel, GRID_WIDTH, GRID_HEIGHT
 from Simulation.agents.cell import agent_portrayal
 
@@ -32,11 +32,9 @@ server = ModularServer(
     model_params = model_params_mesa
 )
 
-server.add_handlers(r".*", [
-    (r"/set_traffic_lights_go",  SetGoHandler,  dict(server=server)),
-    (r"/set_traffic_lights_stop", SetStopHandler, dict(server=server)),
-    (r"/set_traffic_light_go", SetSingleGoHandler, dict(server=server)),
-    (r"/set_traffic_light_stop", SetSingleStopHandler, dict(server=server)),
-])
+add_traffic_light_routes(server)
+
+print("  → Elements:", [type(el).__name__ for el in server.visualization_elements])
+print("  → Handlers:", [h[0] for h in server.handlers])
 
 server.port = get_free_port()

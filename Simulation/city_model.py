@@ -21,6 +21,8 @@ ROAD_THICKNESS = {
     "R4": 1,                # NEW
 }
 
+AVAILABLE_CITY_BLOCKS = ["Residential", "Office", "Market", "Leisure", "Other"]
+
 OPTIMIZED_INTERSECTIONS = True
 
 EMPTY_BLOCK_CHANCE = 0.1
@@ -79,6 +81,8 @@ class CityModel(Model):
         self.min_subblock_spacing = min_subblock_spacing
         self.highway_offset_from_edges = highway_offset_from_edges
         self.traffic_light_range = traffic_light_range
+
+        self.user_selected_traffic_light = None;
 
         self.grid = MultiGrid(self.width, self.height, torus=False)
         self.schedule = RandomActivation(self)
@@ -693,7 +697,7 @@ class CityModel(Model):
                     block_type = "Empty"
                 else:
                     if random.random() < (1 - self.empty_block_chance):
-                        block_type = random.choice(["Residential", "Office", "Market", "Leisure"])
+                        block_type = random.choice(AVAILABLE_CITY_BLOCKS)
                     else:
                         block_type = "Empty"
 
@@ -798,7 +802,7 @@ class CityModel(Model):
     # (7) Place block entrances
     # -----------------------------------------------------------------------
     def _final_place_block_entrances(self):
-        valid_types = {"Residential", "Office", "Market", "Leisure"}
+        valid_types = set(AVAILABLE_CITY_BLOCKS)
 
         for info in self._blocks_data:
             if info["block_type"] not in valid_types:
@@ -896,6 +900,14 @@ class CityModel(Model):
         if d == "E": return "W"
         if d == "W": return "E"
         return d
+
+    def _right_dir(self, d):
+        return {
+            "N": "E",
+            "E": "S",
+            "S": "W",
+            "W": "N",
+        }.get(d, d)
 
     # -----------------------------------------------------------------------
     # (8B) Ensure roads next to a block entrance have direction in
@@ -1279,16 +1291,39 @@ class CityModel(Model):
                     controlled_road.base_color = ZONE_COLORS.get(original_road_type)
                     self.controlled_roads.append(controlled_road)
 
+                    DIR_DELTAS = {
+                        "N": (0, 1),
+                        "E": (1, 0),
+                        "S": (0, -1),
+                        "W": (-1, 0),
+                    }
+
+                    # …inside your loop or function where you have:
+                    #    road_block_x, road_block_y
+                    #    controlled_road.directions  (e.g. ["N","W"] etc.)
+                    valid_blocks = []
+                    for d in controlled_road.directions:
+                        rd = self._right_dir(d)  # e.g. "N" → "E"
+                        dx, dy = DIR_DELTAS.get(rd, (0, 0))  # e.g. (1,0)
+                        valid_blocks.append((road_block_x + dx,
+                                             road_block_y + dy))
+
+                    # right_blocks is now a list of coords to the right of the road.
+                    # If you need them unique:
+                    valid_blocks = list(set(valid_blocks))
+
                     # → carve lights on every adjoining sidewalk (or controlled‑road neighbor)
-                    for lead_to_x, lead_to_y in [(road_block_x + 1, road_block_y), (road_block_x - 1, road_block_y), (road_block_x, road_block_y + 1), (road_block_x, road_block_y - 1)]:
-                        if self._in_bounds(lead_to_x, lead_to_y):
-                            scanned_lead_to = self.cell_contents(lead_to_x, lead_to_y)[0]  # grab the single agent
+                    for valid_neighbor_x, valid_neighbor_y in valid_blocks:
+                        if self._in_bounds(valid_neighbor_x, valid_neighbor_y):
+                            scanned_lead_to = self.cell_contents(valid_neighbor_x, valid_neighbor_y)[0]  # grab the single agent
 
                             # ── if it's a ControlledRoad, look one more cell out in that same direction ──
                             if scanned_lead_to.cell_type == "ControlledRoad" or scanned_lead_to.cell_type == original_road_type:
+                                if not any(dir_ in controlled_road.directions for dir_ in scanned_lead_to.directions):
+                                    continue
                                 # compute direction vector from (x,y) → (sx,sy)
-                                dx, dy = lead_to_x - road_block_x, lead_to_y - road_block_y
-                                fx, fy = lead_to_x + dx, lead_to_y + dy
+                                dx, dy = valid_neighbor_x - road_block_x, valid_neighbor_y - road_block_y
+                                fx, fy = valid_neighbor_x + dx, valid_neighbor_y + dy
                                 if self._in_bounds(fx, fy):
                                     neigh3 = self.cell_contents(fx, fy)[0]
                                     # assign the same traffic light to that further block
@@ -1298,7 +1333,7 @@ class CityModel(Model):
 
                             self._assign_traffic_light(controlled_road, scanned_lead_to,
                                                        original_road_type, road_directions,
-                                                       lead_to_x, lead_to_y)
+                                                       valid_neighbor_x, valid_neighbor_y)
                     # only one set of lights per road cell
                     break
 
