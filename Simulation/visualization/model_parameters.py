@@ -69,7 +69,7 @@ def sp_key() -> str:
     return f"__sp{next(_sp)}"
 
 # ───────────────────────── 3 · PARAMETER DICTIONARY ─────────────────────────
-model_params_mesa = {
+model_params = {
     # (a) inject global CSS first
     "_css": PARAM_PANEL_CSS,
 

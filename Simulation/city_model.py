@@ -96,7 +96,6 @@ class CityModel(Model):
         self.interior_y_min = self.wall_thickness + self.sidewalk_ring_width
         self.interior_y_max = self.height - (self.wall_thickness + self.sidewalk_ring_width) - 1
 
-        self.initial_road = RING_ROAD_TYPE
         self._blocks_data = []
 
         # trackers for quick lookup
@@ -308,11 +307,11 @@ class CityModel(Model):
         # We pass the forced initial_road value to both horizontal and vertical bands.
         self.horizontal_bands = self._make_road_bands_for_interior(
             self.interior_y_min, self.interior_y_max,
-            orientation="horizontal", allow_highway=False, initial_road=self.initial_road
+            orientation="horizontal", allow_highway=False, initial_road=self.ring_road_type
         )
         self.vertical_bands = self._make_road_bands_for_interior(
             self.interior_x_min, self.interior_x_max,
-            orientation="vertical", allow_highway=False, initial_road=self.initial_road
+            orientation="vertical", allow_highway=False, initial_road=self.ring_road_type
         )
 
         # (B) Force 1 horizontal + 1 vertical R1 highway
@@ -338,8 +337,8 @@ class CityModel(Model):
                         continue
 
                     # --- New Check: If this cell lies in a forced boundary corner, mark it as a regular road.
-                    if self.initial_road is not None:
-                        forced_thick = ROAD_THICKNESS[self.initial_road]
+                    if self.ring_road_type is not None:
+                        forced_thick = ROAD_THICKNESS[self.ring_road_type]
                         # Define forced boundary ranges.
                         bottom_range = range(self.interior_y_min, self.interior_y_min + forced_thick)
                         top_range = range(self.interior_y_max - forced_thick + 1, self.interior_y_max + 1)
@@ -436,7 +435,7 @@ class CityModel(Model):
         the first cell and 1 for the second since the forced R2 band thickness is 2).
         """
         # Only apply override if initial road is set to "R2".
-        if self.initial_road != "R2":
+        if self.ring_road_type != "R2":
             return default_dirs
 
         # Get forced bands (assumed to be forced by _make_road_bands_for_interior)
@@ -778,7 +777,7 @@ class CityModel(Model):
                 agent = ags[0]
                 if agent.cell_type == "R2":
                     # If using an R2 initial road, skip forced corner cells.
-                    if self.initial_road == "R2":
+                    if self.ring_road_type == "R2":
                         # Use the forced bands created in _make_road_bands_for_interior.
                         # Forced horizontal bands (bottom and top) are at positions:
                         forced_bottom = range(self.horizontal_bands[0][0], self.horizontal_bands[0][1] + 1)
