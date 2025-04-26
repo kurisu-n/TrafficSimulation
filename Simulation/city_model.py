@@ -1,87 +1,58 @@
-#city_model.py
+# city_model.py ─ refactored to share the central config
+from __future__ import annotations
 
 import random
+from typing import List
 from mesa import Model
 from mesa.space import MultiGrid
 from mesa.time import RandomActivation
-from typing import List
 
-from Simulation.agents.cell import CellAgent, ZONE_COLORS
+from Simulation.config import Defaults
+from Simulation.agents.cell import CellAgent
 from Simulation.agents.intersection_light_group import IntersectionLightGroup
-
-
-GRID_WIDTH = 100
-GRID_HEIGHT = 100
-
-WALL_THICKNESS = 5
-SIDEWALK_RING_WIDTH = 2
-
-ROAD_THICKNESS = {
-    "R1": 4,
-    "R2": 2,
-    "R3": 1,
-    "R4": 1,                # NEW
-}
-
-AVAILABLE_CITY_BLOCKS = ["Residential", "Office", "Market", "Leisure", "Other"]
-
-OPTIMIZED_INTERSECTIONS = True
-
-EMPTY_BLOCK_CHANCE = 0.1
-
-MIN_BLOCK_SPACING = 8
-MAX_BLOCK_SPACING = 16
-
-CARVE_SUBBLOCK_ROADS = True
-SUBBLOCK_ROADS_HAVE_INTERSECTIONS = False
-MIN_SUBBLOCK_SPACING = 4
-SUBBLOCK_CHANCE    = 0.75
-SUBBLOCK_ROAD_TYPE = "R3"
-
-HIGHWAY_OFFSET_FROM_EDGES = 5
-
-RING_ROAD_TYPE = "R2"
-
-TRAFFIC_LIGHT_RANGE = 10
 
 class CityModel(Model):
     def __init__(self,
-                 width=GRID_WIDTH,
-                 height=GRID_HEIGHT,
-                 wall_thickness = WALL_THICKNESS,
-                 sidewalk_ring_width = SIDEWALK_RING_WIDTH,
-                 ring_road_type=RING_ROAD_TYPE,
-                 min_block_spacing = MIN_BLOCK_SPACING,
-                 max_block_spacing = MAX_BLOCK_SPACING,
-                 optimized_intersections=OPTIMIZED_INTERSECTIONS,
-                 empty_block_chance = EMPTY_BLOCK_CHANCE,
-                 carve_subblock_roads = CARVE_SUBBLOCK_ROADS,
-                 subblock_roads_have_intersections=SUBBLOCK_ROADS_HAVE_INTERSECTIONS,
-                 min_subblock_spacing = MIN_SUBBLOCK_SPACING,
-                 highway_offset_from_edges = HIGHWAY_OFFSET_FROM_EDGES,
-                 traffic_light_range = TRAFFIC_LIGHT_RANGE,
+                 width=Defaults.WIDTH,
+                 height=Defaults.HEIGHT,
+                 wall_thickness = Defaults.WALL_THICKNESS,
+                 sidewalk_ring_width = Defaults.SIDEWALK_RING_WIDTH,
+                 ring_road_type = Defaults.RING_ROAD_TYPE,
+                 allow_extra_highways = Defaults.ALLOW_EXTRA_HIGHWAYS,
+                 extra_highways_chance = Defaults.EXTRA_HIGHWAY_CHANCE,
+                 r2_r3_chance_split = Defaults.R2_R3_CHANCE_SPLIT,
+                 min_block_spacing = Defaults.MIN_BLOCK_SPACING,
+                 max_block_spacing = Defaults.MAX_BLOCK_SPACING,
+                 optimized_intersections = Defaults.OPTIMISED_INTERSECTIONS,
+                 empty_block_chance = Defaults.EMPTY_BLOCK_CHANCE,
+                 carve_subblock_roads = Defaults.CARVE_SUBBLOCK_ROADS,
+                 subblock_roads_have_intersections = Defaults.SUBBLOCK_ROADS_HAVE_INTERSECTIONS,
+                 subblock_chance = Defaults.SUBBLOCK_CHANGE,
+                 subblock_road_type = Defaults.SUBBLOCK_ROAD_TYPE,
+                 min_subblock_spacing = Defaults.MIN_SUBBLOCK_SPACING,
+                 highway_offset_from_edges = Defaults.HIGHWAY_OFFSET,
+                 traffic_light_range = Defaults.TRAFFIC_LIGHT_RANGE,
                  seed=None):
-        """
-        ring_road: None (default) means no ring road; otherwise it should be one of the
-                   road types "R1", "R2", or "R3". When provided, the ring road is drawn
-                   inside the sidewalk around the city block. This also shifts the interior
-                   boundaries inward so that other roads (and highways) are placed further from
-                   the grid edge.
-        """
+
         super().__init__(seed=seed)
         self.width = width
         self.height = height
         self.wall_thickness = wall_thickness
         self.sidewalk_ring_width = sidewalk_ring_width
         self.ring_road_type = ring_road_type
+        self.highway_offset_from_edges = highway_offset_from_edges
+        self.allow_extra_highways = allow_extra_highways
+        self.extra_highways_chance = extra_highways_chance
+        self.r2_r3_chance_split = r2_r3_chance_split
         self.min_block_spacing = min_block_spacing
         self.max_block_spacing = max_block_spacing
         self.optimized_intersections = optimized_intersections
         self.empty_block_chance = empty_block_chance
         self.carve_subblock_roads = carve_subblock_roads
-        self.subblock_roads_have_intersections = subblock_roads_have_intersections
+        self.subblock_chance = subblock_chance
+        self.subblock_road_type = subblock_road_type
         self.min_subblock_spacing = min_subblock_spacing
-        self.highway_offset_from_edges = highway_offset_from_edges
+        self.subblock_roads_have_intersections = subblock_roads_have_intersections
         self.traffic_light_range = traffic_light_range
 
         self.user_selected_traffic_light = None
@@ -125,25 +96,21 @@ class CityModel(Model):
         self._create_intersection_light_groups()
 
     # -------------------------------------------------------------------
-    #  Generic intersection factory (optimised + sub‑block aware)
+    #  intersection factory
     # -------------------------------------------------------------------
     def _make_intersection(self, x: int, y: int) -> None:
         """
-        Upgrade (x, y) to a four‑way **Intersection** following these rules:
+        Upgrade (x,y) to a four‑way **Intersection** following these rules:
 
-        ──  OPTIMISED = False  ───────────────────────────────────────────
-        • Every overlap of single ✕ multi is turned into an intersection
+        ──  OPTIMISED=False  ───────────────────────────────────────────
+        • Every overlap is turned into an intersection
           → the entire width of the multi‑lane road is upgraded.
 
-        ──  OPTIMISED = True   ───────────────────────────────────────────
-        • For single ✕ single  → one normal intersection cell.
-        • For single ✕ multi   → **only the outer‑most lane(s)** of the
-          thicker road become intersections
-          (offset 0 and offset band_size‑1).  Inner lanes stay as normal
-          road cells.
-
-        Sub‑block R4 legs are handled by synthesising one‑cell “dummy
-        bands” because they are not present in the main band tables.
+        ──  OPTIMISED=True   ───────────────────────────────────────────
+        • For single✕single → one normal intersection cell.
+        • For single✕multi  → **only the outer‑most lane(s)** of the
+          thicker road become intersections, inner lanes stay as
+          normal road cells.
         """
 
         # ---------- helpers -------------------------------------------------
@@ -157,14 +124,13 @@ class CityModel(Model):
             return st, en, rt, bd, width, off
 
         def _ensure_intersection(cx: int, cy: int):
-            """Create / register a 4‑way intersection at (cx, cy)."""
             ags = self.cell_contents(cx, cy)
             if ags and ags[0].cell_type == "Intersection":
                 return
             self._replace_cell(cx, cy, "Intersection",
                                f"Intersection_{cx}_{cy}")
             ag = self.cell_contents(cx, cy)[0]
-            ag.directions = ["N", "S", "E", "W"]
+            ag.directions = Defaults.AVAILABLE_DIRECTIONS
             if hasattr(self, "_intersection_cells"):
                 self._intersection_cells.add((cx, cy))
         # --------------------------------------------------------------------
@@ -173,18 +139,17 @@ class CityModel(Model):
         hband = self._find_band_covering(y, self.horizontal_bands)
         vband = self._find_band_covering(x, self.vertical_bands)
 
-        # inject dummy bands when an R4 sub‑block road is involved
         if not hband and (
-            self._is_type(x, y, SUBBLOCK_ROAD_TYPE) or
-            any(self._is_type(nx, y, SUBBLOCK_ROAD_TYPE) for nx in (x - 1, x + 1))
+            self._is_type(x, y, self.subblock_road_type) or
+            any(self._is_type(nx, y, self.subblock_road_type) for nx in (x - 1, x + 1))
         ):
-            hband = _dummy_band(y, SUBBLOCK_ROAD_TYPE)
+            hband = _dummy_band(y, self.subblock_road_type)
 
         if not vband and (
-            self._is_type(x, y, SUBBLOCK_ROAD_TYPE) or
-            any(self._is_type(x, ny, SUBBLOCK_ROAD_TYPE) for ny in (y - 1, y + 1))
+            self._is_type(x, y, self.subblock_road_type) or
+            any(self._is_type(x, ny, self.subblock_road_type) for ny in (y - 1, y + 1))
         ):
-            vband = _dummy_band(x, SUBBLOCK_ROAD_TYPE)
+            vband = _dummy_band(x, self.subblock_road_type)
 
         if not (hband and vband):               # not a real crossing
             return
@@ -198,7 +163,7 @@ class CityModel(Model):
             (v_sz == 1 and h_sz > 1)
         )
 
-        # ── 3. OPTIMISED mode – keep only outer‑most lanes ────────────────
+        # ── 3. OPTIMISED Mode – keep only outer‑most lanes ────────────────
         if self.optimized_intersections and single_vs_multi:
             if h_sz > 1:                         # horizontal is the multi
                 multi_rt, multi_orient = h_rt, "horizontal"
@@ -207,7 +172,6 @@ class CityModel(Model):
                 multi_rt, multi_orient = v_rt, "vertical"
                 multi_off, multi_sz, bdir = v_off, v_sz, v_bd
 
-            # keep only offset 0 or offset band_size‑1
             if multi_off not in (0, multi_sz - 1):
                 # inner lane → revert to normal road cell
                 dirs = self._compute_lane_dirs(x,y,
@@ -218,7 +182,7 @@ class CityModel(Model):
                 ag.directions = dirs
                 if hasattr(self, "_intersection_cells"):
                     self._intersection_cells.discard((x, y))
-                # keep bookkeeping consistent
+
                 self._road_cells[(x, y)] = (
                     multi_rt, multi_orient, multi_off, multi_sz, bdir
                 )
@@ -228,7 +192,7 @@ class CityModel(Model):
             _ensure_intersection(x, y)
             return
 
-        # ── 4. non‑optimised mode OR multi ✕ multi ───────────────────────
+        # ── 4. non‑optimised mode OR multi✕multi ───────────────────────
         _ensure_intersection(x, y)
 
 
@@ -236,7 +200,7 @@ class CityModel(Model):
         return self.interior_x_min + self.highway_offset_from_edges
 
     # -----------------------------------------------------------------------
-    # (1) Boundary wall
+    # Boundary wall
     # -----------------------------------------------------------------------
     def _place_thick_wall(self):
         w, h = self.get_width(), self.get_height()
@@ -252,7 +216,7 @@ class CityModel(Model):
             self._replace_cell(x, y, new_type, new_id)
 
     # -----------------------------------------------------------------------
-    # (2) Sidewalk ring (hug every wall cell’s inner face)
+    # Sidewalk ring (hug every wall cell’s inner face)
     # -----------------------------------------------------------------------
     def _place_sidewalk_inner_ring(self):
         w, h = self.get_width(), self.get_height()
@@ -289,16 +253,16 @@ class CityModel(Model):
 
 
     # -----------------------------------------------------------------------
-    # (3) Clear interior => "Nothing"
+    # Clear interior => "Nothing"
     # -----------------------------------------------------------------------
     def _clear_interior(self):
         for y in range(self.interior_y_min, self.interior_y_max + 1):
             for x in range(self.interior_x_min, self.interior_x_max + 1):
                 self._replace_cell(x, y, "Nothing", f"Nothing_{x}_{y}")
 
-        # -----------------------------------------------------------------------
-        # (4) Build roads & sidewalks
-        # -----------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # Build roads & sidewalks
+    # -----------------------------------------------------------------------
 
     def _build_roads_and_sidewalks(self):
         w, h = self.get_width(), self.get_height()
@@ -307,11 +271,11 @@ class CityModel(Model):
         # We pass the forced initial_road value to both horizontal and vertical bands.
         self.horizontal_bands = self._make_road_bands_for_interior(
             self.interior_y_min, self.interior_y_max,
-            orientation="horizontal", allow_highway=False, initial_road=self.ring_road_type
+            orientation="horizontal", allow_highway=self.allow_extra_highways, initial_road=self.ring_road_type
         )
         self.vertical_bands = self._make_road_bands_for_interior(
             self.interior_x_min, self.interior_x_max,
-            orientation="vertical", allow_highway=False, initial_road=self.ring_road_type
+            orientation="vertical", allow_highway=self.allow_extra_highways, initial_road=self.ring_road_type
         )
 
         # (B) Force 1 horizontal + 1 vertical R1 highway
@@ -328,7 +292,7 @@ class CityModel(Model):
             for x in range(w):
                 vband = self._find_band_covering(x, self.vertical_bands)
 
-                # If both horizontal and vertical bands apply...
+                # If both horizontal and vertical bands apply.
                 if hband and vband:
                     (hstart, hend, hrtype, hbdir) = hband
                     (vstart, vend, vrtype, vbdir) = vband
@@ -336,9 +300,9 @@ class CityModel(Model):
                     if (hrtype != "R1" or vrtype != "R1") and not self._inside_interior(x, y):
                         continue
 
-                    # --- New Check: If this cell lies in a forced boundary corner, mark it as a regular road.
+                    # If this cell lies in a forced boundary corner, mark it as a regular road.
                     if self.ring_road_type is not None:
-                        forced_thick = ROAD_THICKNESS[self.ring_road_type]
+                        forced_thick = Defaults.ROAD_THICKNESS[self.ring_road_type]
                         # Define forced boundary ranges.
                         bottom_range = range(self.interior_y_min, self.interior_y_min + forced_thick)
                         top_range = range(self.interior_y_max - forced_thick + 1, self.interior_y_max + 1)
@@ -434,6 +398,7 @@ class CityModel(Model):
         Here, local indices are computed relative to the forced band's start (which is 0 for
         the first cell and 1 for the second since the forced R2 band thickness is 2).
         """
+
         # Only apply override if initial road is set to "R2".
         if self.ring_road_type != "R2":
             return default_dirs
@@ -481,12 +446,12 @@ class CityModel(Model):
         return default_dirs
 
     # -------------------------------------------------------------------
-    #  (4b)  Carve optional L‑shaped sub‑block roads (type R4)
+    #  Carve optional L‑shaped sub‑block roads
     # -------------------------------------------------------------------
     def _carve_subblock_roads(self):
         """
-        1.  Randomly inserts a one‑cell‑wide L‑shaped R4 road in large
-            interior blocks (probability SUB_BLOCK_L_CHANCE).
+        1.  Randomly inserts a one‑cell‑wide L‑shaped road in large
+            interior blocks.
         2.  Guarantees:
             • Smaller sub‑block ≥ MIN_SUB_BLOCK_SPACING in both axes.
             • One leg is inbound, the other outbound.
@@ -498,9 +463,8 @@ class CityModel(Model):
             • Every non‑road neighbour (orthogonal & diagonal) of the pivot
               becomes Sidewalk, so blocks never touch the corner cell.
         """
-        dir_vec = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
-        opposite = {"N": "S", "S": "N", "E": "W", "W": "E"}.__getitem__
-        road = {"R1", "R2", "R3", "R4", "Intersection", "HighwayEntrance"}
+
+        road_types = Defaults.ROAD_LIKE_TYPES
 
         # ---------------- helpers ----------------------------------------------
         def neighbours(cx, cy):
@@ -510,10 +474,10 @@ class CityModel(Model):
                     yield nx, ny
 
         def lay_r4_cell(x, y, arrow):
-            """Convert (x,y) → R4 (if not already road) and edge it with sidewalk."""
+            """Convert (x,y) → road (if not already road) and edge it with sidewalk."""
             ag = self.cell_contents(x, y)[0]
-            if ag.cell_type not in road:
-                self._replace_cell(x, y, SUBBLOCK_ROAD_TYPE, f"{SUBBLOCK_ROAD_TYPE}_{x}_{y}")
+            if ag.cell_type not in road_types:
+                self._replace_cell(x, y, self.subblock_road_type, f"{self.subblock_road_type}_{x}_{y}")
                 ag = self.cell_contents(x, y)[0]
                 ag.directions = [arrow]
             elif ag.cell_type == "R4" and arrow not in ag.directions:
@@ -527,20 +491,20 @@ class CityModel(Model):
         def extend_to_road(sx, sy, march_dir, arrow_dir):
             """
             March from (sx,sy) in *march_dir*.  Convert every Sidewalk or
-            Nothing cell into R4, giving it *arrow_dir*.  Stops at – and now
+            Nothing cell into road, giving it *arrow_dir*.  Stops at – and now
             also updates – the first pre‑existing road cell, ensuring the
             outside road can actually turn into the new sub‑block road.
             """
-            dx, dy = dir_vec[march_dir]
+            dx, dy = Defaults.DIRECTION_VECTORS[march_dir]
             cx, cy = sx, sy
             while self._in_bounds(cx, cy):
                 tgt = self.cell_contents(cx, cy)[0]
-                if tgt.cell_type in road:  # reached network
+                if tgt.cell_type in road_types:
                     if self.subblock_roads_have_intersections:
                         self._make_intersection(cx, cy)
                         self._intersection_cells.add((cx, cy))
                     else:
-                        # just give it the extra arrow into the R4
+                        # just give it the extra arrow into the road
                         if arrow_dir not in tgt.directions:
                             tgt.directions.append(arrow_dir)
                     break
@@ -570,7 +534,7 @@ class CityModel(Model):
                         if (nx, ny) not in visited and self._is_type(nx, ny, "Nothing"):
                             stack.append((nx, ny))
 
-                if not region or random.random() > SUBBLOCK_CHANCE:
+                if not region or random.random() > self.subblock_chance:
                     continue
 
                 # ---- bounding box / quick reject ----
@@ -605,8 +569,8 @@ class CityModel(Model):
                     [("horizontal", "vertical"), ("vertical", "horizontal")]
                 )
                 leg_dir = {
-                    "horizontal": {"in": opposite(hor_dir), "out": hor_dir},
-                    "vertical": {"in": opposite(ver_dir), "out": ver_dir},
+                    "horizontal": {"in": Defaults.DIRECTION_OPPOSITES[hor_dir], "out": hor_dir},
+                    "vertical": {"in": Defaults.DIRECTION_OPPOSITES[ver_dir], "out": ver_dir},
                 }
 
                 # ---------- carve horizontal leg --------------------------------
@@ -640,15 +604,15 @@ class CityModel(Model):
 
                 # ---------- extend legs out to road -----------------------------
                 # horizontal extension
-                arrow_h = h_dir_cells  # arrow on extension
-                extend_to_road(hx_end + dir_vec[hor_dir][0],
-                               hy_end + dir_vec[hor_dir][1],
+                arrow_h = h_dir_cells
+                extend_to_road(hx_end + Defaults.DIRECTION_VECTORS[hor_dir][0],
+                               hy_end + Defaults.DIRECTION_VECTORS[hor_dir][1],
                                hor_dir, arrow_h)
 
                 # vertical extension
                 arrow_v = v_dir_cells
-                extend_to_road(vx_end + dir_vec[ver_dir][0],
-                               vy_end + dir_vec[ver_dir][1],
+                extend_to_road(vx_end + Defaults.DIRECTION_VECTORS[ver_dir][0],
+                               vy_end + Defaults.DIRECTION_VECTORS[ver_dir][1],
                                ver_dir, arrow_v)
 
                 # ---------- surround pivot with sidewalk ------------------------
@@ -657,11 +621,11 @@ class CityModel(Model):
                     nx, ny = px + dx, py + dy
                     if self._in_bounds(nx, ny):
                         nag = self.cell_contents(nx, ny)[0]
-                        if nag.cell_type not in road and nag.cell_type != "Wall":
+                        if nag.cell_type not in road_types and nag.cell_type != "Wall":
                             self._replace_cell(nx, ny, "Sidewalk", f"Sidewalk_{nx}_{ny}")
 
     # -----------------------------------------------------------------------
-    # (5) Flood-fill leftover => blocks (store for entrances)
+    # Flood-fill leftover => blocks
     # -----------------------------------------------------------------------
     def _flood_fill_blocks_storing_data(self):
         visited = set()
@@ -701,7 +665,7 @@ class CityModel(Model):
                     block_type = "Empty"
                 else:
                     if random.random() < (1 - self.empty_block_chance):
-                        block_type = random.choice(AVAILABLE_CITY_BLOCKS)
+                        block_type = random.choice(Defaults.AVAILABLE_CITY_BLOCKS)
                     else:
                         block_type = "Empty"
 
@@ -730,13 +694,13 @@ class CityModel(Model):
                 })
 
     # -----------------------------------------------------------------------
-    # (6) Eliminate dead ends for R3 & normal Intersections
+    # (6) Eliminate dead ends
     # -----------------------------------------------------------------------
     def _eliminate_dead_ends(self):
         # Only consider these types as road cells.
-        road_types = {"R1", "R2", "R3", "R4", "Intersection", "HighwayEntrance"}
-        # Mark R2, R3, and Intersection as removable if they become dead-ends.
-        removable_types = {"R2", "R3", "Intersection"}
+        road_types = Defaults.ROAD_LIKE_TYPES
+        # Marks these as removable types
+        removable_types = Defaults.REMOVABLE_DEAD_END_TYPES
 
         changed = True
         while changed:
@@ -803,10 +767,10 @@ class CityModel(Model):
                         self._make_intersection(x, y)
 
     # -----------------------------------------------------------------------
-    # (7) Place block entrances
+    # Place block entrances
     # -----------------------------------------------------------------------
     def _final_place_block_entrances(self):
-        valid_types = set(AVAILABLE_CITY_BLOCKS)
+        valid_types = set(Defaults.AVAILABLE_CITY_BLOCKS)
 
         for info in self._blocks_data:
             if info["block_type"] not in valid_types:
@@ -833,10 +797,10 @@ class CityModel(Model):
 
 
     # -----------------------------------------------------------------------
-    # (8A) Remove invalid intersection directions
+    # (Remove invalid intersection directions
     # -----------------------------------------------------------------------
     def _remove_invalid_intersection_directions(self):
-        road_types = {"R1", "R2", "R3", "R4", "Intersection", "HighwayEntrance"}
+        road_types = Defaults.ROAD_LIKE_TYPES
         intersection_types = {"Intersection"}
 
         for y in range(self.get_height()):
@@ -856,7 +820,7 @@ class CityModel(Model):
                             continue
 
                         # Only process the cardinal directions
-                        if d not in ["N", "S", "E", "W"]:
+                        if d not in Defaults.AVAILABLE_DIRECTIONS:
                             continue
 
                         nx, ny = self._next_cell_in_direction(x, y, d)
@@ -873,7 +837,6 @@ class CityModel(Model):
                         if neighbor_type not in road_types:
                             continue
 
-                        # NEW BEHAVIOR:
                         # If the neighboring cell is an intersection, always allow traffic toward it.
                         # Otherwise, require that the neighbor allows traffic coming from that direction.
                         if neighbor_type == "Intersection" or (d in neighbor_dirs):
@@ -898,27 +861,12 @@ class CityModel(Model):
         next_cell = self.cell_contents(xd, yd)[0]
         return next_cell.cell_type == "Intersection"
 
-    def _opposite_dir(self, d):
-        if d == "N": return "S"
-        if d == "S": return "N"
-        if d == "E": return "W"
-        if d == "W": return "E"
-        return d
-
-    def _right_dir(self, d):
-        return {
-            "N": "E",
-            "E": "S",
-            "S": "W",
-            "W": "N",
-        }.get(d, d)
-
     # -----------------------------------------------------------------------
-    # (8B) Ensure roads next to a block entrance have direction in
+    # Ensure roads next to a block entrance have direction in
     #      **and** block‐entrances point away from the block
     # -----------------------------------------------------------------------
     def _add_entrance_directions(self):
-        road_types = {"R1", "R2", "R3", "R4", "Intersection", "HighwayEntrance"}
+        road_types = Defaults.ROAD_LIKE_TYPES
 
         for y in range(self.get_height()):
             for x in range(self.get_width()):
@@ -951,12 +899,12 @@ class CityModel(Model):
                                 if needed_dir not in road_agent.directions:
                                     road_agent.directions.append(needed_dir)
                                 # and _invert_ it for the BlockEntrance itself
-                                entrance_dirs.append(self._opposite_dir(needed_dir))
+                                entrance_dirs.append(Defaults.DIRECTION_OPPOSITES[needed_dir])
                     agent.directions = entrance_dirs
 
 
     # -----------------------------------------------------------------------
-    # Road band helper (modified)
+    # Road band helper
     # -----------------------------------------------------------------------
     def _make_road_bands_for_interior(self, start_coord, end_coord,
                                       orientation, allow_highway=False, initial_road=None):
@@ -982,18 +930,18 @@ class CityModel(Model):
         while current <= end_coord:
             # Choose a road type randomly.
             rtype = self._choose_road_type(allow_highway=allow_highway)
-            thick = ROAD_THICKNESS[rtype]
+            thick = Defaults.ROAD_THICKNESS[rtype]
             bstart = current
             bend = min(bstart + thick - 1, end_coord)
 
             if orientation == "horizontal":
                 if rtype == "R3" and last_r3_dir is not None:
-                    bdir = self._opposite_dir(last_r3_dir)
+                    bdir = Defaults.DIRECTION_OPPOSITES[last_r3_dir]
                 else:
                     bdir = random.choice(["E", "W"])
             else:
                 if rtype == "R3" and last_r3_dir is not None:
-                    bdir = self._opposite_dir(last_r3_dir)
+                    bdir = Defaults.DIRECTION_OPPOSITES[last_r3_dir]
                 else:
                     bdir = random.choice(["N", "S"])
             bands.append((bstart, bend, rtype, bdir))
@@ -1013,9 +961,8 @@ class CityModel(Model):
             current = block_end + 1
 
         # --- Post-Processing: Force First and Last Bands if initial_road is set ---
-        # --- Post-Processing: Force First and Last Bands if initial_road is set ---
         if initial_road is not None:
-            forced_thick = ROAD_THICKNESS[initial_road]
+            forced_thick = Defaults.ROAD_THICKNESS[initial_road]
             # Determine forced directions:
             if initial_road == "R3":
                 # For R3, use fixed directions.
@@ -1063,20 +1010,30 @@ class CityModel(Model):
         return bands
 
     def _choose_road_type(self, allow_highway=True):
-        # Weighted random => 20% R1, 50% R2, 30% R3 if allow_highway
-        r = random.random()
         if allow_highway:
-            if r < 0.2:
+            r1_chance = self.extra_highways_chance
+            remaining = 1.0 - r1_chance
+            r2_chance = remaining * self.r2_r3_chance_split
+            r3_chance = remaining * (1 - self.r2_r3_chance_split)
+        else:
+            r1_chance = 0.0
+            r2_chance = self.r2_r3_chance_split
+            r3_chance = 1.0 - r2_chance
+
+        r = random.random()
+
+        if allow_highway:
+            if r < r1_chance:
                 return "R1"
-            elif r < 0.7:
+            elif r < r1_chance + r2_chance:
                 return "R2"
             else:
                 return "R3"
         else:
-            return "R2" if (random.random() < 0.5) else "R3"
+            return "R2" if r < r2_chance else "R3"
 
     def _force_one_highway(self, bands, total_size):
-        thick = ROAD_THICKNESS["R1"]
+        thick = Defaults.ROAD_THICKNESS["R1"]
         inset = self._compute_highway_inset()
         start_min = inset
         start_max = total_size - thick - inset
@@ -1114,11 +1071,11 @@ class CityModel(Model):
         for R1 and R2 roads.
 
         Assumptions:
-          - For horizontal roads, the band cells are ordered from south (offset 0) to north.
-          - For vertical roads, the band cells are ordered from west (offset 0) to east.
+          - For horizontal roads, the band cells are ordered from south to north.
+          - For vertical roads, the band cells are ordered from west to east.
         """
         # R3 remains one-way using its given direction.
-        if rtype in ("R3", "R4"):  # <── was just R3
+        if rtype == "R3":
             return [band_dir]
 
         # For two-lane roads (R2), assume band_size == 2.
@@ -1262,7 +1219,7 @@ class CityModel(Model):
         all adjacent Sidewalks.
         This scans *all* road cells (including sub‑block roads).
         """
-        road_types = {"R1", "R2", "R3", "R4", "HighwayEntrance"}
+        road_types = Defaults.ROAD_LIKE_TYPES_WITHOUT_INTERSECTIONS
 
         w, h = self.get_width(), self.get_height()
         for road_block_x in range(w):
@@ -1292,23 +1249,16 @@ class CityModel(Model):
                     controlled_road = self.cell_contents(road_block_x, road_block_y)[0]
                     controlled_road.directions = road_directions
                     controlled_road.status = "Pass"
-                    controlled_road.base_color = ZONE_COLORS.get(original_road_type)
+                    controlled_road.base_color = Defaults.ZONE_COLORS.get(original_road_type)
                     self.controlled_roads.append(controlled_road)
-
-                    DIR_DELTAS = {
-                        "N": (0, 1),
-                        "E": (1, 0),
-                        "S": (0, -1),
-                        "W": (-1, 0),
-                    }
 
                     # …inside your loop or function where you have:
                     #    road_block_x, road_block_y
                     #    controlled_road.directions  (e.g. ["N","W"] etc.)
                     valid_blocks = []
                     for d in controlled_road.directions:
-                        rd = self._right_dir(d)  # e.g. "N" → "E"
-                        dx, dy = DIR_DELTAS.get(rd, (0, 0))  # e.g. (1,0)
+                        rd = Defaults.DIRECTION_TO_THE_RIGHT[d]  # e.g. "N" → "E"
+                        dx, dy = Defaults.DIRECTION_VECTORS.get(rd, (0, 0))  # e.g. (1,0)
                         valid_blocks.append((road_block_x + dx,
                                              road_block_y + dy))
 
@@ -1365,7 +1315,7 @@ class CityModel(Model):
 
         reversed_directions = []
         for fd in scanning_directions:
-            reversed_directions.append(self._opposite_dir(fd))
+            reversed_directions.append(Defaults.DIRECTION_OPPOSITES[fd])
 
         # ray‑cast out along the light’s own arrows to find block entrances
         for rd in reversed_directions:

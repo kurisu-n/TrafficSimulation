@@ -4,9 +4,10 @@ import socket
 from mesa.visualization.modules import CanvasGrid
 from mesa.visualization.ModularVisualization import ModularServer
 
+from Simulation.visualization.cell_inspector import CellInspectorJS, add_cell_inspector
 from Simulation.visualization.model_parameters import model_params
-from Simulation.visualization.traffic_light_control import SetGoHandler, SetStopHandler, SetSingleGoHandler, SetSingleStopHandler, TrafficLightControl, add_traffic_light_routes
-from Simulation.city_model import CityModel, GRID_WIDTH, GRID_HEIGHT
+from Simulation.visualization.traffic_light_control import add_traffic_light_routes, TrafficLightControl
+from Simulation.city_model import CityModel
 from Simulation.agents.cell import agent_portrayal
 
 def get_free_port(default=8000, max_tries=100):
@@ -27,12 +28,13 @@ canvas = CanvasGrid(agent_portrayal,
 
 server = ModularServer(
     model_cls = CityModel,
-    visualization_elements = [canvas, TrafficLightControl()],
+    visualization_elements = [canvas, TrafficLightControl(), CellInspectorJS(model_params["width"].value, model_params["height"].value)],
     name = "Structured Urban Grid World",
-    model_params = model_params
+    model_params = model_params,
 )
 
 add_traffic_light_routes(server)
+add_cell_inspector(server)
 
 print("  → Elements:", [type(el).__name__ for el in server.visualization_elements])
 print("  → Handlers:", [h[0] for h in server.handlers])

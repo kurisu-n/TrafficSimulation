@@ -6,14 +6,14 @@ from typing import List
 
 class TrafficLightControl(TextElement):
     def render(self, model):
-        # ── ensure FIRST dropdown selection ────────────────────────────────
+        # ── FIRST dropdown selection ────────────────────────────────
         tls: List = list(model.get_traffic_lights())
         if not hasattr(model, "user_selected_traffic_light"):
             model.user_selected_traffic_light = None
         if model.user_selected_traffic_light is None and tls:
             model.user_selected_traffic_light = tls[0].unique_id
 
-        # ── ensure SECOND dropdown selection (intersection groups) ─────────
+        # ── SECOND dropdown selection ─────────
         ilgs: List = []
         if hasattr(model, "get_intersection_light_groups"):
             ilgs = list(model.get_intersection_light_groups())
@@ -112,9 +112,6 @@ class _Base(RequestHandler):
     def _err(self, status, msg):
         self.set_status(status); self.write(msg)
 
-# ────────────────────────────────────────────────────────────────────────────
-#  Existing light‑level handlers (unchanged)
-# ────────────────────────────────────────────────────────────────────────────
 class SetUserSelectionHandler(_Base):
     def post(self):
         try:
@@ -162,9 +159,7 @@ class SetStopHandler(_Base):
         except Exception:
             self._err(500, "ERROR " + traceback.format_exc())
 
-# ────────────────────────────────────────────────────────────────────────────
-#  NEW intersection‑group handlers
-# ────────────────────────────────────────────────────────────────────────────
+
 class SetUserIntersectionSelectionHandler(_Base):
     def post(self):
         try:
@@ -198,13 +193,9 @@ class SetIlgStopHandler(_Base):
         except Exception:
             self._err(500, "ERROR " + traceback.format_exc())
 
-# ---------------------------------------------------------------------------
-#  Route helper
-# ---------------------------------------------------------------------------
 
 def add_traffic_light_routes(server):
     """Attach *all* traffic‑light + group control routes to the Tornado app."""
-
     print("️🚦 Adding Traffic & ILG Control to server…")
     server.add_handlers(
         r".*",

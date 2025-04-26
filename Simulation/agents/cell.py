@@ -3,6 +3,7 @@
 from mesa import Agent
 import colorsys
 import matplotlib.colors as mcolors
+from Simulation.config import Defaults
 
 def _hex_to_rgb(h):
     h = h.lstrip('#')
@@ -24,34 +25,6 @@ def desaturate(color, sat_factor=0.5, light_factor=0.0):
     r2, g2, b2 = colorsys.hls_to_rgb(h, l, s)
     return _rgb_to_hex((r2, g2, b2))
 
-# Colors for each zone/road type
-ZONE_COLORS = {
-    "Residential": "cadetblue",
-    "Office": "orange",
-    "Market": "green",
-    "Leisure": "palevioletred",
-    "Other": "darkkhaki",
-    "Empty":"papayawhip",
-    "R1": "dodgerblue",
-    "R2": "saddlebrown",
-    "R3": "darkgreen",
-    "Sidewalk": "grey",
-    "Intersection": "yellow",
-    "BlockEntrance": "magenta",
-    "HighwayEntrance": "royalblue",
-    "HighwayExit": "blue",
-    "TrafficLight":"lime",
-    "TrafficLightStop":"red",
-    "ControlledRoad":"thistle",
-    "ControlledRoadStop":"salmon",
-    "Wall": "black",
-    "Nothing":"white"
-}
-
-DIRECTION_ICONS = {"N":"↑","S":"↓","E":"→","W":"←"}
-
-ROADS = ["R1","R2","R3"]
-
 class CellAgent(Agent):
     """
     A cell that can be:
@@ -61,16 +34,15 @@ class CellAgent(Agent):
       - HighwayEntrance / Exit
       - TrafficLight
       - ControlledRoad
-      - Wall, Sidewalk, Zone blocks...
+      - Wall, Sidewalk, Zone blocks
     """
     def __init__(self, unique_id, model, cell_type):
         super().__init__(unique_id, model)
         self.cell_type = cell_type
         self.directions = []
         self.status = None
-        self.base_color = ZONE_COLORS.get(cell_type)
+        self.base_color = Defaults.ZONE_COLORS.get(cell_type)
 
-        # new fields:
         self.occupied = False
         self.block_id = None
         self.block_type = None
@@ -121,7 +93,6 @@ class CellAgent(Agent):
     def leads_to(self, other: "CellAgent", visited=None) -> bool:
         """
         Return True if there is a directed path of road‐arrows from self to other.
-        Searches successors following each arrow in self.directions.
         """
         if visited is None:
             visited = set()
@@ -157,38 +128,18 @@ class CellAgent(Agent):
 
 
 def agent_portrayal(agent):
-    arrows = [DIRECTION_ICONS.get(d, '') for d in agent.directions]
+    arrows = [Defaults.DIRECTION_ICONS.get(d, '') for d in agent.directions]
     direction_text = ' '.join(arrows)
-    desc_map = {
-        "Residential": "Residential City Block",
-        "Office": "Office City Block",
-        "Market": "Market City Block",
-        "Leisure": "Leisure City Block",
-        "Other": "Miscellaneous City Block",
-        "Empty": "Empty City Block",
-        "R1": "Highway (4 Lanes, 2/Dir)",
-        "R2": "Major Road (2 Lanes, 1/Dir)",
-        "R3": "Local Road (1 Lane, One Dir)",
-        "R4": "Sub‑block Road (L‑shaped)",
-        "Sidewalk": "Pedestrian Walkway",
-        "Intersection": "Road intersection",
-        "BlockEntrance": "City Block Entrance & Exit",
-        "HighwayEntrance": "Highway Entrance",
-        "HighwayExit": "Highway Exit",
-        "TrafficLight":"Intersection Traffic Light",
-        "ControlledRoad":"Road Controlled by Traffic Light",
-        "Wall": "Outer Wall",
-        "Nothing":"Empty/unused space",
-    }
+
     portrayal = {
         "Shape": "rect", "w":1.0, "h":1.0, "Filled":True,
         "Color": agent.base_color,
         "Layer": 0,
         "Type": agent.cell_type,
-        "Description": desc_map.get(agent.cell_type, ""),
+        "Description": Defaults.DESCRIPTION_MAP.get(agent.cell_type, ""),
     }
 
-    if agent.cell_type in ROADS:
+    if agent.cell_type in Defaults.ROADS:
         portrayal["Assigned"] = agent.light is not None
         portrayal["Color"] = (
             desaturate(agent.base_color, sat_factor=0.75, light_factor=0.25)
@@ -198,7 +149,7 @@ def agent_portrayal(agent):
 
     if agent.cell_type=="ControlledRoad":
         portrayal["Color"] = (
-            ZONE_COLORS["ControlledRoadStop"]
+            Defaults.ZONE_COLORS["ControlledRoadStop"]
             if agent.status=="Stop"
             else desaturate(agent.base_color, sat_factor=0.75, light_factor=0.25)
         )
@@ -206,12 +157,10 @@ def agent_portrayal(agent):
 
     if agent.cell_type =="TrafficLight":
         portrayal["Color"] = (
-            ZONE_COLORS["TrafficLightStop"]
+            Defaults.ZONE_COLORS["TrafficLightStop"]
             if agent.status == "Stop"
-            else ZONE_COLORS["TrafficLight"]
+            else Defaults.ZONE_COLORS["TrafficLight"]
         )
-
-
 
     if direction_text:
         portrayal["Directions"] = direction_text
