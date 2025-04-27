@@ -28,26 +28,26 @@ class TrafficLightControl(TextElement):
         if not hasattr(model, "user_selected_traffic_light"):
             model.user_selected_traffic_light = None
         if model.user_selected_traffic_light is None and tls:
-            model.user_selected_traffic_light = tls[0].unique_id
+            model.user_selected_traffic_light = tls[0].id
 
         # ---------- ensure we always have *a* selected ILG ----------
         if not hasattr(model, "user_selected_intersection"):
             model.user_selected_intersection = None
         if model.user_selected_intersection is None and ilgs:
-            model.user_selected_intersection = ilgs[0].unique_id
+            model.user_selected_intersection = ilgs[0].id
 
         # ---------------- dropdown 〈option〉 lists -----------------
         tl_opts = "\n".join(
-            f'<option value="{tl.unique_id}"'
-            f'{" selected" if str(tl.unique_id)==str(model.user_selected_traffic_light) else ""}>'
-            f'{tl.unique_id}</option>'
+            f'<option value="{tl.id}"'
+            f'{" selected" if str(tl.id)==str(model.user_selected_traffic_light) else ""}>'
+            f'{tl.id}</option>'
             for tl in tls
         )
 
         ilg_opts = "\n".join(
-            f'<option value="{g.unique_id}"'
-            f'{" selected" if str(g.unique_id)==str(model.user_selected_intersection) else ""}>'
-            f'{g.unique_id}</option>'
+            f'<option value="{g.id}"'
+            f'{" selected" if str(g.id)==str(model.user_selected_intersection) else ""}>'
+            f'{g.id}</option>'
             for g in ilgs
         )
 
@@ -57,7 +57,7 @@ class TrafficLightControl(TextElement):
         opp_opts = ""
         try:
             sel_tl = next(tl for tl in tls
-                          if str(tl.unique_id) == str(model.user_selected_traffic_light))
+                          if str(tl.id) == str(model.user_selected_traffic_light))
             parent_ilg = next(g for g in ilgs if sel_tl in g.traffic_lights)
 
             opp_dict = parent_ilg.get_opposite_traffic_lights()     # {"N-S":[…], "W-E":[…]}
@@ -276,7 +276,7 @@ class SetSingleGoHandler(_Base):
         uid = self.server.model.user_selected_traffic_light
         try:
             next(tl for tl in self.server.model.get_traffic_lights()
-                 if str(tl.unique_id) == str(uid)).set_light_go()
+                 if str(tl.id) == str(uid)).set_light_go()
             self._ok()
         except StopIteration:
             self._err(404, "No TL")
@@ -286,7 +286,7 @@ class SetSingleStopHandler(_Base):
         uid = self.server.model.user_selected_traffic_light
         try:
             next(tl for tl in self.server.model.get_traffic_lights()
-                 if str(tl.unique_id) == str(uid)).set_light_stop()
+                 if str(tl.id) == str(uid)).set_light_stop()
             self._ok()
         except StopIteration:
             self._err(404, "No TL")
@@ -310,7 +310,7 @@ class SetIlgGoHandler(_Base):
         uid = self.server.model.user_selected_intersection
         try:
             next(g for g in self.server.model.get_intersection_light_groups()
-                 if str(g.unique_id)==str(uid)).set_all_go()
+                 if str(g.id)==str(uid)).set_all_go()
             self._ok()
         except StopIteration:
             self._err(404, "No ILG")
@@ -320,7 +320,7 @@ class SetIlgStopHandler(_Base):
         uid = self.server.model.user_selected_intersection
         try:
             next(g for g in self.server.model.get_intersection_light_groups()
-                 if str(g.unique_id)==str(uid)).set_all_stop()
+                 if str(g.id)==str(uid)).set_all_stop()
             self._ok()
         except StopIteration:
             self._err(404, "No ILG")
@@ -338,7 +338,7 @@ class SetOppGoHandler(_Base):
         ilg_id = self.server.model.user_selected_intersection    # current ILG
         try:
             ilg = next(g for g in self.server.model.get_intersection_light_groups()
-                       if str(g.unique_id) == str(ilg_id))
+                       if str(g.id) == str(ilg_id))
             for tl in ilg.get_opposite_traffic_lights().get(axis, []):
                 tl.set_light_go()
             self._ok()
@@ -351,7 +351,7 @@ class SetOppStopHandler(_Base):
         ilg_id = self.server.model.user_selected_intersection
         try:
             ilg = next(g for g in self.server.model.get_intersection_light_groups()
-                       if str(g.unique_id) == str(ilg_id))
+                       if str(g.id) == str(ilg_id))
             for tl in ilg.get_opposite_traffic_lights().get(axis, []):
                 tl.set_light_stop()
             self._ok()
@@ -365,7 +365,7 @@ class SetIlgNeighborsGoHandler(_Base):
         uid = self.server.model.user_selected_intersection
         try:
             next(g for g in self.server.model.get_intersection_light_groups()
-                 if str(g.unique_id)==str(uid)).set_all_go_with_neighbors()
+                 if str(g.id)==str(uid)).set_all_go_with_neighbors()
             self._ok()
         except StopIteration:
             self._err(404, "No ILG")
@@ -375,7 +375,7 @@ class SetIlgNeighborsStopHandler(_Base):
         uid = self.server.model.user_selected_intersection
         try:
             next(g for g in self.server.model.get_intersection_light_groups()
-                 if str(g.unique_id)==str(uid)).set_all_stop_with_neighbors()
+                 if str(g.id)==str(uid)).set_all_stop_with_neighbors()
             self._ok()
         except StopIteration:
             self._err(404, "No ILG")
@@ -386,7 +386,7 @@ class SetGroupNeighborsIntermediateGoHandler(_Base):
         uid = self.server.model.user_selected_intersection
         try:
             next(g for g in self.server.model.get_intersection_light_groups()
-                 if str(g.unique_id)==str(uid)).set_all_go_with_neighbors_and_intermediate()
+                 if str(g.id)==str(uid)).set_all_go_with_neighbors_and_intermediate()
             self._ok()
         except StopIteration:
             self._err(404, "No ILG")
@@ -396,7 +396,7 @@ class SetGroupNeighborsIntermediateStopHandler(_Base):
         uid = self.server.model.user_selected_intersection
         try:
             next(g for g in self.server.model.get_intersection_light_groups()
-                 if str(g.unique_id)==str(uid)).set_all_stop_with_neighbors_and_intermediate()
+                 if str(g.id)==str(uid)).set_all_stop_with_neighbors_and_intermediate()
             self._ok()
         except StopIteration:
             self._err(404, "No ILG")

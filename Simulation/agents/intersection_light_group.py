@@ -8,6 +8,7 @@ class IntersectionLightGroup(Agent):
 
     def __init__(self, unique_id: str, model, traffic_lights: List[Agent]):
         super().__init__(unique_id, model)
+        self.id = unique_id
         self.traffic_lights = traffic_lights
         self.neighbor_groups: Dict[str, "IntersectionLightGroup"] | None = None
         self.intermediate_groups: Set["IntersectionLightGroup"] | None = None

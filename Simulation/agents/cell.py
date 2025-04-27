@@ -39,6 +39,7 @@ class CellAgent(Agent):
     """
     def __init__(self, unique_id, model, position, cell_type):
         super().__init__(unique_id, model)
+        self.id = unique_id
         self.position = position
         self.cell_type = cell_type
         self.directions = []
@@ -182,7 +183,7 @@ def agent_portrayal(agent):
 
     if agent.cell_type=="Intersection":
         portrayal["Assigned"] = agent.light is not None
-        portrayal["Intersection Group"] = None if agent.intersection_group is None else agent.intersection_group.unique_id
+        portrayal["Intersection Group"] = None if agent.intersection_group is None else agent.intersection_group.id
         portrayal["Color"] = (
             desaturate(agent.base_color, sat_factor=0.75, light_factor=0.25)
             if agent.light is not None and agent.light.status == "Stop"

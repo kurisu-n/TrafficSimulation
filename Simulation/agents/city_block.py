@@ -43,6 +43,7 @@ class CityBlock(Agent):
         gradual_resources: bool = False,
     ) -> None:
         super().__init__(unique_id, model)
+        self.id = unique_id
         self.block_type = block_type
         self._inner_blocks: List[CellAgent] = list(inner_blocks)
         self._sidewalks: List[CellAgent] = list(sidewalks)
@@ -123,7 +124,7 @@ class CityBlock(Agent):
     # ------------------------------------------------------------------
     def __repr__(self):
         return (
-            f"<CityBlock {self.unique_id} | {self.block_type} | "
+            f"<CityBlock {self.id} | {self.block_type} | "
             f"Food {self._food_units:.1f}/{self.max_food_units}, "
             f"Waste {self._waste_units:.1f}/{self.max_waste_units}>"
         )
