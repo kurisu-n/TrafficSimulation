@@ -173,5 +173,18 @@ model_params = {
     "traffic_light_range": mesa.visualization.Slider(
         name="Traffic-light sensor range", value=Defaults.TRAFFIC_LIGHT_RANGE,
         min_value=0, max_value=20, step=1,
-    )
+    ),
+    sp_key(): spacer(),
+    "forward_traffic_light_range": mesa.visualization.Checkbox(
+        name="Traffic-light Forward range", value=Defaults.FORWARD_TRAFFIC_LIGHT_RANGE,
+        description="Include the road blocks after the traffic light in the traffic light sensor range."
+    ),
+    sp_key(): spacer(),
+    "forward_traffic_light_range_intersections": mesa.visualization.Choice(
+        name="Traffic-light Intersection range", value=Defaults.FORWARD_TRAFFIC_LIGHT_INTERSECTIONS,
+        choices=Defaults.FORWARD_TRAFFIC_LIGHT_INTERSECTION_OPTIONS,
+        description="How to handle traffic light sensor range for intersections."
+    ),
+    sp_key(): spacer(),
+    sp_key(): spacer(),
 }

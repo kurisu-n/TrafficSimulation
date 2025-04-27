@@ -1,4 +1,5 @@
 # cell.py
+from typing import cast
 
 from mesa import Agent
 import colorsys
@@ -36,8 +37,9 @@ class CellAgent(Agent):
       - ControlledRoad
       - Wall, Sidewalk, Zone blocks
     """
-    def __init__(self, unique_id, model, cell_type):
+    def __init__(self, unique_id, model, position, cell_type):
         super().__init__(unique_id, model)
+        self.position = position
         self.cell_type = cell_type
         self.directions = []
         self.status = None
@@ -59,21 +61,12 @@ class CellAgent(Agent):
 
     # ———— utility/query methods ————
 
-    def get_position(self):
-        # Assumes unique_id like "Type_x_y"
-        parts = self.unique_id.split('_')
-        return int(parts[-2]), int(parts[-1])
+    def get_city_model(self) -> "CityModel":
+        from Simulation.city_model import CityModel
+        return cast(CityModel, self.model)
 
-    def successors(self):
-        """Return dict direction → list of neighbor CellAgents."""
-        x, y = self.get_position()
-        nbrs = {}
-        for d in self.directions:
-            nx, ny = self.model._next_cell_in_direction(x, y, d)
-            if self.model._in_bounds(nx, ny):
-                nbr = self.model.grid.get_cell_list_contents((nx, ny))[0]
-                nbrs.setdefault(d, []).append(nbr)
-        return nbrs
+    def get_position(self):
+        return self.position
 
     def is_block_entrance(self):
         return self.cell_type == "BlockEntrance"
@@ -90,6 +83,17 @@ class CellAgent(Agent):
     def is_traffic_light(self):
         return self.cell_type == "TrafficLight"
 
+    def outgoing_cells(self):
+        """Return dict direction → list of neighbor CellAgents."""
+        x, y = self.get_position()
+        nbrs = {}
+        for d in self.directions:
+            nx, ny = self.get_city_model().next_cell_in_direction(x, y, d)
+            if self.get_city_model().in_bounds(nx, ny):
+                nbr = self.get_city_model().grid.get_cell_list_contents((nx, ny))[0]
+                nbrs.setdefault(d, []).append(nbr)
+        return nbrs
+
     def leads_to(self, other: "CellAgent", visited=None) -> bool:
         """
         Return True if there is a directed path of road‐arrows from self to other.
@@ -103,14 +107,26 @@ class CellAgent(Agent):
         # Explore every outgoing arrow
         x, y = self.get_position()
         for d in self.directions:
-            nx, ny = self.model._next_cell_in_direction(x, y, d)
-            if not self.model._in_bounds(nx, ny):
+            nx, ny = self.get_city_model().next_cell_in_direction(x, y, d)
+            if not self.get_city_model().in_bounds(nx, ny):
                 continue
-            nbr = self.model.grid.get_cell_list_contents((nx, ny))[0]
+            nbr = self.get_city_model().grid.get_cell_list_contents((nx, ny))[0]
             if nbr in visited:
                 continue
             if nbr.leads_to(other, visited):
                 return True
+        return False
+
+    def directly_leads_to(self, other: "CellAgent") -> bool:
+        x,y = self.get_position()
+        for d in self.directions:
+            nx, ny = self.get_city_model().next_cell_in_direction(x,y,d)
+            if not self.get_city_model().in_bounds(nx, ny):
+                continue
+            nbr = self.get_city_model().grid.get_cell_list_contents((nx, ny))[0]
+            if nbr is other:
+                return True
+
         return False
 
     def set_light_go(self):
@@ -160,6 +176,15 @@ def agent_portrayal(agent):
             Defaults.ZONE_COLORS["TrafficLightStop"]
             if agent.status == "Stop"
             else Defaults.ZONE_COLORS["TrafficLight"]
+        )
+
+    if agent.cell_type=="Intersection":
+        portrayal["Assigned"] = agent.light is not None
+        portrayal["Intersection Group"] = None if agent.intersection_group is None else agent.intersection_group.unique_id
+        portrayal["Color"] = (
+            desaturate(agent.base_color, sat_factor=0.75, light_factor=0.25)
+            if agent.light is not None and agent.light.status == "Stop"
+            else agent.base_color
         )
 
     if direction_text:

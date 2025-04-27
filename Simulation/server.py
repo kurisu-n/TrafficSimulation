@@ -22,9 +22,12 @@ def get_free_port(default=8000, max_tries=100):
     raise RuntimeError("No available ports found!")
 
 # Build the grid with our click handler
-canvas = CanvasGrid(agent_portrayal,
-                    model_params["width"].value, model_params["height"].value,
-                    900, 900)
+canvas = CanvasGrid(
+    portrayal_method = agent_portrayal,
+    grid_width       = model_params["width"].value,
+    grid_height      = model_params["height"].value,
+    canvas_height    = 1000,
+    canvas_width     = 1000)
 
 server = ModularServer(
     model_cls = CityModel,

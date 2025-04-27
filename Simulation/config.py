@@ -5,8 +5,8 @@ from enum import Enum, auto
 @dataclass(frozen=True)
 class Defaults:
     # grid
-    WIDTH:  int = 100
-    HEIGHT: int = 100
+    WIDTH:  int = 120
+    HEIGHT: int = 120
     # frame
     WALL_THICKNESS:       int   = 5
     SIDEWALK_RING_WIDTH:  int   = 2
@@ -33,6 +33,10 @@ class Defaults:
     # control
     OPTIMISED_INTERSECTIONS:           bool = True
     TRAFFIC_LIGHT_RANGE:               int  = 4
+    FORWARD_TRAFFIC_LIGHT_RANGE:         bool = False
+
+    FORWARD_TRAFFIC_LIGHT_INTERSECTION_OPTIONS = ["Skip", "Include in Range", "Include as Extra"]
+    FORWARD_TRAFFIC_LIGHT_INTERSECTIONS: str = FORWARD_TRAFFIC_LIGHT_INTERSECTION_OPTIONS[0]
 
     ROAD_THICKNESS = {
         "R1": 4,

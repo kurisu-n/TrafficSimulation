@@ -32,6 +32,8 @@ class CityModel(Model):
                  min_subblock_spacing = Defaults.MIN_SUBBLOCK_SPACING,
                  highway_offset_from_edges = Defaults.HIGHWAY_OFFSET,
                  traffic_light_range = Defaults.TRAFFIC_LIGHT_RANGE,
+                 forward_traffic_light_range = Defaults.FORWARD_TRAFFIC_LIGHT_RANGE,
+                 forward_traffic_light_range_intersections = Defaults.FORWARD_TRAFFIC_LIGHT_INTERSECTIONS,
                  seed=None):
 
         super().__init__(seed=seed)
@@ -54,9 +56,12 @@ class CityModel(Model):
         self.min_subblock_spacing = min_subblock_spacing
         self.subblock_roads_have_intersections = subblock_roads_have_intersections
         self.traffic_light_range = traffic_light_range
+        self.forward_traffic_light_range = forward_traffic_light_range
+        self.forward_traffic_light_range_intersections = forward_traffic_light_range_intersections
 
         self.user_selected_traffic_light = None
         self.user_selected_intersection = None
+        self.user_selected_opposite = None
 
         self.grid = MultiGrid(self.width, self.height, torus=False)
         self.schedule = RandomActivation(self)
@@ -124,13 +129,13 @@ class CityModel(Model):
             return st, en, rt, bd, width, off
 
         def _ensure_intersection(cx: int, cy: int):
-            ags = self.cell_contents(cx, cy)
-            if ags and ags[0].cell_type == "Intersection":
+            cell_agents = self.cell_contents(cx, cy)
+            if cell_agents and cell_agents[0].cell_type == "Intersection":
                 return
-            self._replace_cell(cx, cy, "Intersection",
+            self._place_cell(cx, cy, "Intersection",
                                f"Intersection_{cx}_{cy}")
-            ag = self.cell_contents(cx, cy)[0]
-            ag.directions = Defaults.AVAILABLE_DIRECTIONS
+            intersection = self.cell_contents(cx, cy)[0]
+            intersection.directions = Defaults.AVAILABLE_DIRECTIONS
             if hasattr(self, "_intersection_cells"):
                 self._intersection_cells.add((cx, cy))
         # --------------------------------------------------------------------
@@ -177,7 +182,7 @@ class CityModel(Model):
                 dirs = self._compute_lane_dirs(x,y,
                     multi_rt, multi_orient, multi_off, multi_sz, bdir
                 )
-                self._replace_cell(x, y, multi_rt, f"{multi_rt}_{x}_{y}")
+                self._place_cell(x, y, multi_rt, f"{multi_rt}_{x}_{y}")
                 ag = self.cell_contents(x, y)[0]
                 ag.directions = dirs
                 if hasattr(self, "_intersection_cells"):
@@ -206,14 +211,12 @@ class CityModel(Model):
         w, h = self.get_width(), self.get_height()
         for y in range(h):
             for x in range(w):
-                ag = CellAgent(f"Wall_{x}_{y}", self, "Wall")
-                self.grid.place_agent(ag, (x, y))
-                self.schedule.add(ag)
+                self._place_cell(x, y, "Wall", f"Wall_{x}_{y}")
 
     def _replace_if_wall(self, x, y, new_type, new_id):
         ags = self.cell_contents(x, y)
         if ags and ags[0].cell_type == "Wall":
-            self._replace_cell(x, y, new_type, new_id)
+            self._place_cell(x, y, new_type, new_id)
 
     # -----------------------------------------------------------------------
     # Sidewalk ring (hug every wall cell’s inner face)
@@ -233,10 +236,10 @@ class CityModel(Model):
             # only from x=ws … x=(w-ws-1) so we skip the corner columns
             for x in range(ws, w - ws):
                 if self._is_type(x, y_top, "Wall"):
-                    self._replace_cell(x, y_top, "Sidewalk",
+                    self._place_cell(x, y_top, "Sidewalk",
                                        f"Sidewalk_{x}_{y_top}")
                 if self._is_type(x, y_bottom, "Wall"):
-                    self._replace_cell(x, y_bottom, "Sidewalk",
+                    self._place_cell(x, y_bottom, "Sidewalk",
                                        f"Sidewalk_{x}_{y_bottom}")
 
             # === vertical faces ===
@@ -245,10 +248,10 @@ class CityModel(Model):
             # only from y=ws … y=(h-ws-1) so we skip the corner rows
             for y in range(ws, h - ws):
                 if self._is_type(x_left, y, "Wall"):
-                    self._replace_cell(x_left, y, "Sidewalk",
+                    self._place_cell(x_left, y, "Sidewalk",
                                        f"Sidewalk_{x_left}_{y}")
                 if self._is_type(x_right, y, "Wall"):
-                    self._replace_cell(x_right, y, "Sidewalk",
+                    self._place_cell(x_right, y, "Sidewalk",
                                        f"Sidewalk_{x_right}_{y}")
 
 
@@ -258,7 +261,7 @@ class CityModel(Model):
     def _clear_interior(self):
         for y in range(self.interior_y_min, self.interior_y_max + 1):
             for x in range(self.interior_x_min, self.interior_x_max + 1):
-                self._replace_cell(x, y, "Nothing", f"Nothing_{x}_{y}")
+                self._place_cell(x, y, "Nothing", f"Nothing_{x}_{y}")
 
     # -----------------------------------------------------------------------
     # Build roads & sidewalks
@@ -346,7 +349,7 @@ class CityModel(Model):
         for (rx, ry), (rtype, orientation, offset, band_size, bdir) in self._road_cells.items():
             if (rx, ry) in self._intersection_cells:
                 continue
-            self._replace_cell(rx, ry, rtype, f"{rtype}_{rx}_{ry}")
+            self._place_cell(rx, ry, rtype, f"{rtype}_{rx}_{ry}")
             rag = self.cell_contents(rx, ry)[0]
             # Compute the default directions.
             directions = self._compute_lane_dirs(rx, ry, rtype, orientation, offset, band_size, bdir)
@@ -362,7 +365,7 @@ class CityModel(Model):
                              (rx - 1, ry),
                              (rx, ry + 1),
                              (rx, ry - 1)):
-                if not self._in_bounds(nx, ny):
+                if not self.in_bounds(nx, ny):
                     continue
                 # skip other road/intersection cells
                 if (nx, ny) in road_positions or (nx, ny) in self._intersection_cells:
@@ -371,13 +374,13 @@ class CityModel(Model):
                 neigh = self.cell_contents(nx, ny)[0]
                 # 1) carve into empty space
                 if neigh.cell_type == "Nothing":
-                    self._replace_cell(nx, ny, "Sidewalk", f"Sidewalk_{nx}_{ny}")
+                    self._place_cell(nx, ny, "Sidewalk", f"Sidewalk_{nx}_{ny}")
 
                 # 2) *also* carve into the wall if this is a highway‐lane
                 else:
                     curr = self.cell_contents(rx, ry)[0].cell_type
                     if neigh.cell_type == "Wall" and curr in {"R1", "HighwayEntrance", "HighwayExit"}:
-                        self._replace_cell(nx, ny, "Sidewalk", f"Sidewalk_{nx}_{ny}")
+                        self._place_cell(nx, ny, "Sidewalk", f"Sidewalk_{nx}_{ny}")
 
         # Convert boundary R1 => "HighwayEntrance"
         self._replace_boundary_highways_with_entrances()
@@ -467,17 +470,17 @@ class CityModel(Model):
         road_types = Defaults.ROAD_LIKE_TYPES
 
         # ---------------- helpers ----------------------------------------------
-        def neighbours(cx, cy):
+        def neighbours(x, y):
             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                nx, ny = cx + dx, cy + dy
-                if self._in_bounds(nx, ny):
+                nx, ny = x + dx, y + dy
+                if self.in_bounds(nx, ny):
                     yield nx, ny
 
         def lay_r4_cell(x, y, arrow):
             """Convert (x,y) → road (if not already road) and edge it with sidewalk."""
             ag = self.cell_contents(x, y)[0]
             if ag.cell_type not in road_types:
-                self._replace_cell(x, y, self.subblock_road_type, f"{self.subblock_road_type}_{x}_{y}")
+                self._place_cell(x, y, self.subblock_road_type, f"{self.subblock_road_type}_{x}_{y}")
                 ag = self.cell_contents(x, y)[0]
                 ag.directions = [arrow]
             elif ag.cell_type == "R4" and arrow not in ag.directions:
@@ -485,8 +488,8 @@ class CityModel(Model):
 
             # add sidewalk ring
             for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
-                if self._in_bounds(nx, ny) and self._is_type(nx, ny, "Nothing"):
-                    self._replace_cell(nx, ny, "Sidewalk", f"Sidewalk_{nx}_{ny}")
+                if self.in_bounds(nx, ny) and self._is_type(nx, ny, "Nothing"):
+                    self._place_cell(nx, ny, "Sidewalk", f"Sidewalk_{nx}_{ny}")
 
         def extend_to_road(sx, sy, march_dir, arrow_dir):
             """
@@ -497,7 +500,7 @@ class CityModel(Model):
             """
             dx, dy = Defaults.DIRECTION_VECTORS[march_dir]
             cx, cy = sx, sy
-            while self._in_bounds(cx, cy):
+            while self.in_bounds(cx, cy):
                 tgt = self.cell_contents(cx, cy)[0]
                 if tgt.cell_type in road_types:
                     if self.subblock_roads_have_intersections:
@@ -516,9 +519,9 @@ class CityModel(Model):
 
         # ---------------- iterate over all 'Nothing' blobs ---------------------
         visited = set()
-        W, H = self.get_width(), self.get_height()
-        for y in range(H):
-            for x in range(W):
+        w, h = self.get_width(), self.get_height()
+        for y in range(h):
+            for x in range(w):
                 if (x, y) in visited or not self._is_type(x, y, "Nothing"):
                     continue
 
@@ -619,10 +622,10 @@ class CityModel(Model):
                 for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1),
                                (1, 1), (-1, 1), (1, -1), (-1, -1)):
                     nx, ny = px + dx, py + dy
-                    if self._in_bounds(nx, ny):
+                    if self.in_bounds(nx, ny):
                         nag = self.cell_contents(nx, ny)[0]
                         if nag.cell_type not in road_types and nag.cell_type != "Wall":
-                            self._replace_cell(nx, ny, "Sidewalk", f"Sidewalk_{nx}_{ny}")
+                            self._place_cell(nx, ny, "Sidewalk", f"Sidewalk_{nx}_{ny}")
 
     # -----------------------------------------------------------------------
     # Flood-fill leftover => blocks
@@ -646,7 +649,7 @@ class CityModel(Model):
                     visited.add((cx, cy))
                     region.append((cx, cy))
                     for nx, ny in [(cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)]:
-                        if self._in_bounds(nx, ny) and (nx, ny) not in visited:
+                        if self.in_bounds(nx, ny) and (nx, ny) not in visited:
                             if self._is_type(nx, ny, "Nothing"):
                                 stack.append((nx, ny))
 
@@ -671,18 +674,18 @@ class CityModel(Model):
 
                 # — Fill every cell in region with that block_type —
                 for bx, by in region:
-                    self._replace_cell(bx, by, block_type, f"{block_type}_{bx}_{by}")
+                    self._place_cell(bx, by, block_type, f"{block_type}_{bx}_{by}")
 
                 # — Carve the “ring” around it for potential entrances —
                 ring = set()
                 for bx, by in region:
                     for nx, ny in [(bx + 1, by), (bx - 1, by), (bx, by + 1), (bx, by - 1)]:
-                        if self._in_bounds(nx, ny) and (nx, ny) not in region:
+                        if self.in_bounds(nx, ny) and (nx, ny) not in region:
                             ring.add((nx, ny))
 
                 for sx, sy in ring:
                     if self._is_type(sx, sy, "Nothing"):
-                        self._replace_cell(sx, sy, "Sidewalk", f"Sidewalk_{sx}_{sy}")
+                        self._place_cell(sx, sy, "Sidewalk", f"Sidewalk_{sx}_{sy}")
 
                 # — Assign a unique block_id and store all data —
                 block_id = len(self._blocks_data) + 1
@@ -714,14 +717,14 @@ class CityModel(Model):
                     if ctype in removable_types:
                         neighbors = self._road_neighbors(x, y, road_types)
                         if len(neighbors) < 2:
-                            self._replace_cell(x, y, "Sidewalk", f"Sidewalk_{x}_{y}")
+                            self._place_cell(x, y, "Sidewalk", f"Sidewalk_{x}_{y}")
                             changed = True
 
 
     def _road_neighbors(self, x, y, road_types):
         results = []
         for (nx, ny) in [(x+1,y),(x-1,y),(x,y+1),(x,y-1)]:
-            if self._in_bounds(nx, ny):
+            if self.in_bounds(nx, ny):
                 ags = self.cell_contents(nx, ny)
                 if ags and ags[0].cell_type in road_types:
                     results.append((nx, ny))
@@ -758,7 +761,7 @@ class CityModel(Model):
                     # Check each of the four cardinal neighbors.
                     for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
                         nx, ny = x + dx, y + dy
-                        if self._in_bounds(nx, ny):
+                        if self.in_bounds(nx, ny):
                             neighbor_ags = self.cell_contents(nx, ny)
                             if neighbor_ags and neighbor_ags[0].cell_type == "Sidewalk":
                                 sidewalk_count += 1
@@ -787,7 +790,7 @@ class CityModel(Model):
 
             # pick one, make it a BlockEntrance
             cx, cy = random.choice(road_candidates)
-            self._replace_cell(cx, cy, "BlockEntrance", f"BlockEntrance_{cx}_{cy}")
+            self._place_cell(cx, cy, "BlockEntrance", f"BlockEntrance_{cx}_{cy}")
             agent = self.cell_contents(cx, cy)[0]
 
             # annotate and track
@@ -823,8 +826,8 @@ class CityModel(Model):
                         if d not in Defaults.AVAILABLE_DIRECTIONS:
                             continue
 
-                        nx, ny = self._next_cell_in_direction(x, y, d)
-                        if not self._in_bounds(nx, ny):
+                        nx, ny = self.next_cell_in_direction(x, y, d)
+                        if not self.in_bounds(nx, ny):
                             continue
 
                         neighbor_ags = self.cell_contents(nx, ny)
@@ -845,7 +848,7 @@ class CityModel(Model):
                     agent.directions = valid_dirs
 
 
-    def _next_cell_in_direction(self, x, y, d):
+    def next_cell_in_direction(self, x, y, d):
         if d == "N":
             return x, y + 1
         elif d == "S":
@@ -856,8 +859,8 @@ class CityModel(Model):
             return x - 1, y
         return x, y
 
-    def _is_next_cell_direction_an_intersecton(self, x, y, d):
-        xd, yd = self._next_cell_in_direction(x, y, d)
+    def is_next_cell_in_direction_an_intersection(self, x, y, d):
+        xd, yd = self.next_cell_in_direction(x, y, d)
         next_cell = self.cell_contents(xd, yd)[0]
         return next_cell.cell_type == "Intersection"
 
@@ -879,7 +882,7 @@ class CityModel(Model):
                     entrance_dirs = []
                     # for each neighboring road, point both ways:
                     for (nx, ny) in [(x+1,y),(x-1,y),(x,y+1),(x,y-1)]:
-                        if self._in_bounds(nx, ny):
+                        if self.in_bounds(nx, ny):
                             nags = self.cell_contents(nx, ny)
                             if nags and nags[0].cell_type in road_types:
                                 road_agent = nags[0]
@@ -1014,11 +1017,9 @@ class CityModel(Model):
             r1_chance = self.extra_highways_chance
             remaining = 1.0 - r1_chance
             r2_chance = remaining * self.r2_r3_chance_split
-            r3_chance = remaining * (1 - self.r2_r3_chance_split)
         else:
             r1_chance = 0.0
             r2_chance = self.r2_r3_chance_split
-            r3_chance = 1.0 - r2_chance
 
         r = random.random()
 
@@ -1111,10 +1112,10 @@ class CityModel(Model):
                     side_dirs = []
                     # Allow a lane shift (if needed) only if not in the rightmost (offset==0) lane.
                     if (offset > 0
-                            and not self._is_next_cell_direction_an_intersecton (x, y, "S")):
+                            and not self.is_next_cell_in_direction_an_intersection (x, y, "S")):
                         side_dirs.append("S")  # shift right (toward south)
                     if (offset < half - 1
-                            and not self._is_next_cell_direction_an_intersecton(x, y, "N")):
+                            and not self.is_next_cell_in_direction_an_intersection(x, y, "N")):
                         side_dirs.append("N")  # optional left shift (toward north)
                     return [main_dir] + side_dirs
                 else:
@@ -1123,10 +1124,10 @@ class CityModel(Model):
                     side_dirs = []
                     # For westbound, the right-hand lane is the one with the highest offset.
                     if (offset < band_size - 1
-                            and not self._is_next_cell_direction_an_intersecton(x, y, "N")):
+                            and not self.is_next_cell_in_direction_an_intersection(x, y, "N")):
                         side_dirs.append("N")  # shift right (toward north)
                     if (offset > half
-                            and not self._is_next_cell_direction_an_intersecton(x, y, "S")):
+                            and not self.is_next_cell_in_direction_an_intersection(x, y, "S")):
                         side_dirs.append("S")  # optional left shift (toward south)
                     return [main_dir] + side_dirs
 
@@ -1139,10 +1140,10 @@ class CityModel(Model):
                     main_dir = "S"
                     side_dirs = []
                     if (offset > 0
-                            and not self._is_next_cell_direction_an_intersecton (x, y, "W")):
+                            and not self.is_next_cell_in_direction_an_intersection (x, y, "W")):
                         side_dirs.append("W")  # shift right (toward west)
                     if (offset < (band_size // 2) - 1
-                            and not self._is_next_cell_direction_an_intersecton (x, y, "E")):
+                            and not self.is_next_cell_in_direction_an_intersection (x, y, "E")):
                         side_dirs.append("E")  # optional left shift (toward east)
                     return [main_dir] + side_dirs
                 else:
@@ -1150,10 +1151,10 @@ class CityModel(Model):
                     main_dir = "N"
                     side_dirs = []
                     if (offset < band_size - 1
-                            and not self._is_next_cell_direction_an_intersecton(x, y, "E")):
+                            and not self.is_next_cell_in_direction_an_intersection(x, y, "E")):
                         side_dirs.append("E")  # shift right (toward east)
                     if (offset > band_size // 2
-                            and not self._is_next_cell_direction_an_intersecton (x, y, "W")):
+                            and not self.is_next_cell_in_direction_an_intersection (x, y, "W")):
                         side_dirs.append("W")  # optional left shift (toward west)
                     return [main_dir] + side_dirs
 
@@ -1200,7 +1201,7 @@ class CityModel(Model):
                 new_type = "HighwayExit"
 
             # swap it out
-            self._replace_cell(ex, ey, new_type, f"{new_type}_{ex}_{ey}")
+            self._place_cell(ex, ey, new_type, f"{new_type}_{ex}_{ey}")
             he = self.cell_contents(ex, ey)[0]
             he.directions = old_dirs
             he.highway_orientation = (
@@ -1236,16 +1237,16 @@ class CityModel(Model):
                 original_road_type = road_block.cell_type
 
                 # check each arrow for an Intersection neighbor
-                for d in road_directions:
-                    nx, ny = self._next_cell_in_direction(road_block_x, road_block_y, d)
-                    if not self._in_bounds(nx, ny):
+                for r_d in road_directions:
+                    nx, ny = self.next_cell_in_direction(road_block_x, road_block_y, r_d)
+                    if not self.in_bounds(nx, ny):
                         continue
                     road_lead_to = self.cell_contents(nx, ny)[0]
                     if road_lead_to.cell_type != "Intersection":
                         continue
 
                     # → convert to ControlledRoad
-                    self._replace_cell(road_block_x, road_block_y, "ControlledRoad", f"ControlledRoad_{road_block_x}_{road_block_y}")
+                    self._place_cell(road_block_x, road_block_y, "ControlledRoad", f"ControlledRoad_{road_block_x}_{road_block_y}")
                     controlled_road = self.cell_contents(road_block_x, road_block_y)[0]
                     controlled_road.directions = road_directions
                     controlled_road.status = "Pass"
@@ -1256,8 +1257,8 @@ class CityModel(Model):
                     #    road_block_x, road_block_y
                     #    controlled_road.directions  (e.g. ["N","W"] etc.)
                     valid_blocks = []
-                    for d in controlled_road.directions:
-                        rd = Defaults.DIRECTION_TO_THE_RIGHT[d]  # e.g. "N" → "E"
+                    for cr_d in controlled_road.directions:
+                        rd = Defaults.DIRECTION_TO_THE_RIGHT[cr_d]  # e.g. "N" → "E"
                         dx, dy = Defaults.DIRECTION_VECTORS.get(rd, (0, 0))  # e.g. (1,0)
                         valid_blocks.append((road_block_x + dx,
                                              road_block_y + dy))
@@ -1268,7 +1269,7 @@ class CityModel(Model):
 
                     # → carve lights on every adjoining sidewalk (or controlled‑road neighbor)
                     for valid_neighbor_x, valid_neighbor_y in valid_blocks:
-                        if self._in_bounds(valid_neighbor_x, valid_neighbor_y):
+                        if self.in_bounds(valid_neighbor_x, valid_neighbor_y):
                             scanned_lead_to = self.cell_contents(valid_neighbor_x, valid_neighbor_y)[0]  # grab the single agent
 
                             # ── if it's a ControlledRoad, look one more cell out in that same direction ──
@@ -1278,7 +1279,7 @@ class CityModel(Model):
                                 # compute direction vector from (x,y) → (sx,sy)
                                 dx, dy = valid_neighbor_x - road_block_x, valid_neighbor_y - road_block_y
                                 fx, fy = valid_neighbor_x + dx, valid_neighbor_y + dy
-                                if self._in_bounds(fx, fy):
+                                if self.in_bounds(fx, fy):
                                     neigh3 = self.cell_contents(fx, fy)[0]
                                     # assign the same traffic light to that further block
                                     self._assign_traffic_light(controlled_road, neigh3,
@@ -1294,17 +1295,16 @@ class CityModel(Model):
     def _assign_traffic_light(self, controlled_road, aspiring_traffic_light, original_road_type,
                               scanning_directions, x, y):
 
-        if aspiring_traffic_light.cell_type != "Sidewalk" and aspiring_traffic_light.cell_type != "TrafficLight":
-            return
-
         if aspiring_traffic_light.cell_type == "TrafficLight":
             tl = aspiring_traffic_light
         elif aspiring_traffic_light.cell_type == "Sidewalk":
             # replace with a TrafficLight
-            self._replace_cell(x, y, "TrafficLight", f"TrafficLight_{x}_{y}")
+            self._place_cell(x, y, "TrafficLight", f"TrafficLight_{x}_{y}")
             tl = self.cell_contents(x, y)[0]
             self.traffic_lights.append(tl)
             tl.status = "Pass"
+        else:
+            return
 
         controlled_road.light = tl
         tl.controlled_blocks.append(controlled_road)
@@ -1313,22 +1313,65 @@ class CityModel(Model):
 
     def _scan_for_traffic_flow(self, road, scanning_directions, original_road_type, traffic_light, scan_depth):
 
+        self._scan_for_traffic_flow_reverse(road, scanning_directions, original_road_type, traffic_light, scan_depth)
+        if self.forward_traffic_light_range:
+            self._scan_for_traffic_flow_forward(road, scanning_directions, original_road_type, traffic_light, scan_depth)
+
+    def _scan_for_traffic_flow_reverse(self, road, scanning_directions, original_road_type, traffic_light, scan_depth):
+
         reversed_directions = []
         for fd in scanning_directions:
             reversed_directions.append(Defaults.DIRECTION_OPPOSITES[fd])
 
-        # ray‑cast out along the light’s own arrows to find block entrances
         for rd in reversed_directions:
             ctrl_x, ctrl_y = road.get_position()
+            bx, by = self.next_cell_in_direction(ctrl_x, ctrl_y, rd)
             while scan_depth <= self.traffic_light_range:
-                scan_depth += 1
-                bx, by = self._next_cell_in_direction(ctrl_x, ctrl_y, rd)
-                if self._in_bounds(bx, by):
+                if self.in_bounds(bx, by):
                     nb = self.cell_contents(bx, by)[0]
                     if nb.cell_type == original_road_type and nb.leads_to(road):
                         traffic_light.assigned_road_blocks.append(nb)
                         nb.light = traffic_light
-                        self._scan_for_traffic_flow(nb, nb.directions, nb.cell_type, traffic_light, scan_depth)
+                        bx, by = self.next_cell_in_direction(bx, by, rd)
+                        scan_depth += 1
+                    else:
+                        break
+                else:
+                    break
+
+    def _scan_for_traffic_flow_forward(self, road, scanning_directions, original_road_type, traffic_light, scan_depth):
+
+        for rd in scanning_directions:
+            ctrl_x, ctrl_y = road.get_position()
+            bx, by = self.next_cell_in_direction(ctrl_x, ctrl_y, rd)
+
+            while scan_depth <= self.traffic_light_range:
+                if self.in_bounds(bx, by):
+                    currently_scanned_road = self.cell_contents(bx, by)[0]
+                    if currently_scanned_road.cell_type == "Intersection":
+
+                        if self.forward_traffic_light_range_intersections == Defaults.FORWARD_TRAFFIC_LIGHT_INTERSECTION_OPTIONS[1]:
+                            traffic_light.assigned_road_blocks.append(currently_scanned_road)
+                            currently_scanned_road.light = traffic_light
+                            scan_depth += 1
+                        elif self.forward_traffic_light_range_intersections == Defaults.FORWARD_TRAFFIC_LIGHT_INTERSECTION_OPTIONS[2]:
+                            traffic_light.assigned_road_blocks.append(currently_scanned_road)
+                            currently_scanned_road.light = traffic_light
+
+                        bx, by = self.next_cell_in_direction(bx, by, rd)
+                    elif currently_scanned_road.cell_type == original_road_type:
+                        if currently_scanned_road.directly_leads_to(road):
+                            self._scan_for_traffic_flow_forward(currently_scanned_road, original_road_type, original_road_type, traffic_light, scan_depth)
+                        elif rd in currently_scanned_road.directions:
+                            traffic_light.assigned_road_blocks.append(currently_scanned_road)
+                            currently_scanned_road.light = traffic_light
+                            scan_depth += 1
+
+                        bx, by = self.next_cell_in_direction(bx, by, rd)
+                    else:
+                        break
+                else:
+                    break
 
     def _create_intersection_light_groups(self) -> None:
         """Scan every *contiguous* block of Intersection cells, work out its
@@ -1371,7 +1414,7 @@ class CityModel(Model):
 
             lights = []
             for cx, cy in corner_cells:
-                if not self._in_bounds(cx, cy):
+                if not self.in_bounds(cx, cy):
                     continue
                 ags = self.cell_contents(cx, cy)
                 if ags and ags[0].cell_type == "TrafficLight":
@@ -1385,6 +1428,14 @@ class CityModel(Model):
             self.intersection_light_groups.append(group)
             self.schedule.add(group)  # optional, keeps API consistent
 
+            for tl in lights:
+                tl.intersection_group = group
+
+            # ② every Intersection cell inside the cluster
+            for ix, iy in cluster:
+                ia = self.cell_contents(ix, iy)[0]  # the single Intersection CellAgent
+                ia.intersection_group = group
+
     # -----------------------------------------------------------------------
     # Utilities
     # -----------------------------------------------------------------------
@@ -1396,7 +1447,7 @@ class CityModel(Model):
         """
         x, y = cell
         for nx, ny in [(x+1, y), (x-1, y), (x, y+1), (x, y-1)]:
-            if self._in_bounds(nx, ny):
+            if self.in_bounds(nx, ny):
                 ags = self.cell_contents(nx, ny)
                 if ags and ags[0].cell_type in [
                     "R1", "R2", "R3", "Intersection", "HighwayEntrance", "ControlledRoad"
@@ -1404,13 +1455,12 @@ class CityModel(Model):
                     return True
         return False
 
-
-    def _replace_cell(self, x, y, new_type, new_id):
+    def _place_cell(self, x, y, new_type, new_id):
         old_list = self.cell_contents(x, y)
         for oa in old_list:
             self.grid.remove_agent(oa)
             self.schedule.remove(oa)
-        ag = CellAgent(new_id, self, new_type)
+        ag = CellAgent(new_id, self, (x,y),new_type)
         self.grid.place_agent(ag, (x, y))
         self.schedule.add(ag)
 
@@ -1418,7 +1468,7 @@ class CityModel(Model):
         ags = self.cell_contents(x, y)
         return bool(ags and ags[0].cell_type == ctype)
 
-    def _in_bounds(self, x, y):
+    def in_bounds(self, x, y):
         return (0 <= x < self.get_width()) and (0 <= y < self.get_height())
 
     def _inside_interior(self, x, y):
