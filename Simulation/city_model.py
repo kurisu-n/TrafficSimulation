@@ -1625,3 +1625,79 @@ class CityModel(Model):
     def set_intersections_stop(self):
         for Intersection in self.intersection_light_groups:
             Intersection.set_stop()
+
+    # ═══════════════════════════════════════════════════════════════
+    #  City-block querying helpers
+    # ═══════════════════════════════════════════════════════════════
+    def _sort_blocks(self, blocks, by: str):
+        if by == "food":
+            blocks = sorted(blocks, key=lambda b: b.get_food_units())
+        elif by == "waste":
+            blocks = sorted(blocks, key=lambda b: -b.get_waste_units())
+        return blocks
+
+    def get_all_city_blocks(self, sort_by: str = "unsorted"):
+        """Return **every** CityBlock (optionally sorted)."""
+        return self._sort_blocks(list(self.city_blocks.values()), sort_by)
+
+    def get_blocks_needing_food(self, sort_by: str = "unsorted"):
+        """Blocks whose ``needs_food()`` is True."""
+        return self._sort_blocks(
+            [b for b in self.city_blocks.values() if b.needs_food()],
+            sort_by,
+        )
+
+    def get_blocks_producing_waste(self, sort_by: str = "unsorted"):
+        """Blocks whose ``produces_waste()`` is True."""
+        return self._sort_blocks(
+            [b for b in self.city_blocks.values() if b.produces_waste()],
+            sort_by,
+        )
+
+    def get_city_blocks_by_type(self, block_type, sort_by: str = "unsorted"):
+        return self.get_city_blocks_by_types([block_type], sort_by)
+
+    def get_city_blocks_by_types(self, block_types, sort_by: str = "unsorted"):
+        """
+        Generic picker.
+
+        * ``types`` may be a single str or any iterable of types.
+        * Pass ``types=None`` to get *all* blocks (identical to ``get_all_city_blocks``).
+        """
+        if block_types is None:
+            subset = list(self.city_blocks.values())
+        else:
+            wanted = {block_types} if isinstance(block_types, str) else set(block_types)
+            subset = [b for b in self.city_blocks.values() if b.block_type in wanted]
+        return self._sort_blocks(subset, sort_by)
+
+    # ──────────────────────────────────────────────────────────────
+    #  Typed-block helpers (static, readable)
+    # ──────────────────────────────────────────────────────────────
+    def get_residential_city_blocks(self, sort_by: str = "unsorted"):
+        return self.get_city_blocks_by_types("Residential", sort_by)
+
+    def get_office_city_blocks(self, sort_by: str = "unsorted"):
+        return self.get_city_blocks_by_types("Office", sort_by)
+
+    def get_market_city_blocks(self, sort_by: str = "unsorted"):
+        return self.get_city_blocks_by_types("Market", sort_by)
+
+    def get_leisure_city_blocks(self, sort_by: str = "unsorted"):
+        return self.get_city_blocks_by_types("Leisure", sort_by)
+
+    def get_other_city_blocks(self, sort_by: str = "unsorted"):
+        return self.get_city_blocks_by_types("Other", sort_by)
+
+    # “Highest-need” selectors ------------------------------------------------
+    def get_block_most_in_need_of_food(self):
+        """The block with *least* food remaining (needs topping up most)."""
+        needy = self.get_blocks_needing_food(sort_by="food")
+        return needy[0] if needy else None
+
+    def get_block_most_in_need_of_waste_pickup(self):
+        """The block with *most* waste accumulated."""
+        dirty = self.get_blocks_producing_waste(sort_by="waste")
+        return dirty[0] if dirty else None
+
+

@@ -197,8 +197,12 @@ def agent_portrayal(agent):
         cb = getattr(city, "city_blocks", {}).get(agent.block_id)
 
         if cb is not None:
-                portrayal["Food"] = f"{int(cb.get_food_units())}/{int(cb.max_food_units)}"
-                portrayal["Waste"] = f"{int(cb.get_waste_units())}/{int(cb.max_waste_units)}"
+            if cb.needs_food():
+               portrayal["Food"] = (
+                            f"{int(cb.get_food_units())}/{int(cb.max_food_units)}")
+            if cb.produces_waste():
+                portrayal["Waste"] = (
+                            f"{int(cb.get_waste_units())}/{int(cb.max_waste_units)}")
 
 
     if agent.cell_type == "BlockEntrance":

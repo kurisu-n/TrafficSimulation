@@ -109,4 +109,7 @@ class Defaults:
     WASTE_CAPACITY_PER_CELL = 1.5  # units per inner cell
     WASTE_PRODUCTION_TICKS = 100  # ticks between production
 
+    CITY_BLOCK_THAT_NEED_FOOD = ["Market", "Leisure"]
+    CITY_BLOCK_THAT_PRODUCE_WASTE = AVAILABLE_CITY_BLOCKS
+
     GRADUAL_CITY_BLOCK_RESOURCES = True

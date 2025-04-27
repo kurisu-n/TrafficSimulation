@@ -70,6 +70,24 @@ class CityBlock(Agent):
         self._waste_remainder = 0.0
 
     # ------------------------------------------------------------------
+    # Convenience predicates & metrics
+    # ------------------------------------------------------------------
+    def needs_food(self) -> bool:
+        """Return *True* if this block type is listed as food‑dependent."""
+        return self.block_type in Defaults.CITY_BLOCK_THAT_NEED_FOOD
+
+    def produces_waste(self) -> bool:
+        """Return *True* if this block type produces waste by default."""
+        return self.block_type in Defaults.CITY_BLOCK_THAT_PRODUCE_WASTE
+
+    # Numeric helpers frequently used for sorting/ranking
+    def food_shortage(self) -> float:      # higher ⇒ more urgent
+        return self.max_food_units - self._food_units
+
+    def waste_surplus(self) -> float:      # higher ⇒ more urgent
+        return self._waste_units
+
+    # ------------------------------------------------------------------
     # Public getters
     # ------------------------------------------------------------------
     def get_inner_blocks(self): return self._inner_blocks
@@ -90,6 +108,9 @@ class CityBlock(Agent):
     # Update logic (called every tick)
     # ------------------------------------------------------------------
     def _update_food(self):
+        if not self.needs_food():
+            return
+
         if self.gradual_resources:
             # accumulate fractional amount
             self._food_remainder += self._food_rate_per_tick
@@ -104,6 +125,9 @@ class CityBlock(Agent):
                 self._ticks_since_food = 0
 
     def _update_waste(self):
+        if not self.produces_waste():
+            return
+
         if self.gradual_resources:
             self._waste_remainder += self._waste_rate_per_tick
             if self._waste_remainder >= 1.0:
