@@ -1535,6 +1535,18 @@ class CityModel(Model):
 
         return cb
 
+    def _add_dummy_agents(self):
+        from Simulation.agents.dummy import DummyAgent
+
+        # … inside CityModel.__init__, after building the city grid …
+        uid = 0
+        for x in range(self.width):
+            for y in range(self.height):
+                dummy = DummyAgent(f"Dummy_{x}_{y}", self, (x, y))
+                self.grid.place_agent(dummy, (x, y))
+                self.schedule.add(dummy)
+                uid += 1
+
     # -----------------------------------------------------------------------
     # Utilities
     # -----------------------------------------------------------------------

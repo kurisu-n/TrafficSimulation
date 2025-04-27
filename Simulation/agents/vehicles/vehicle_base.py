@@ -3,6 +3,7 @@ import random
 import heapq
 from Simulation.config import Defaults
 from Simulation.agents.cell import CellAgent
+from Simulation.agents.dummy import DummyAgent
 
 class VehicleAgent(Agent):
     """
@@ -20,6 +21,12 @@ class VehicleAgent(Agent):
 
         # Mark occupancy on the starting cell and place on the grid
         self.current_cell.occupied = True
+        for a in self.model.grid.get_cell_list_contents([self.start_cell.get_position()]):
+            if isinstance(a, DummyAgent):
+                self.model.grid.remove_agent(a)
+                self.model.schedule.remove(a)
+                break
+
         self.model.grid.place_agent(self, self.current_cell.get_position())
         # Register with the model scheduler
         self.model.schedule.add(self)
@@ -101,32 +108,61 @@ class VehicleAgent(Agent):
 
     def step(self):
         """
-        Move along the path according to current speed, updating occupancy.
+        Move along the path according to current speed, updating occupancy,
+        swapping out DummyAgents when entering or leaving a cell.
         """
+        # 1) Update speed
         self.current_speed = self.compute_speed()
+
+        # 2) Remember the old position
+        old_pos = self.current_cell.get_position()
+
+        # 3) Walk up to current_speed steps
         for _ in range(self.current_speed):
             if not self.path:
                 break
             next_cell = self.path[0]
+            # stop if occupied
             if next_cell.occupied:
                 break
-            prev_pos = self.current_cell.get_position()
+
             new_pos = next_cell.get_position()
 
-            # Free the old cell and occupy the new one
+            # 3a) Remove the DummyAgent at the destination cell (if any)
+            for a in self.model.grid.get_cell_list_contents([new_pos]):
+                if isinstance(a, DummyAgent):
+                    self.model.grid.remove_agent(a)
+                    self.model.schedule.remove(a)
+                    break
+
+            # 3b) Free the old cell and occupy the new one
             self.current_cell.occupied = False
             self.current_cell = next_cell
             self.current_cell.occupied = True
 
-            # Update direction
-            vector = (new_pos[0] - prev_pos[0], new_pos[1] - prev_pos[1])
-            self.direction = {v: k for k, v in Defaults.DIRECTION_VECTORS.items()}[vector]
-
-            # Physically move the agent on the grid
+            # 3c) Physically move on the grid
             self.model.grid.move_agent(self, new_pos)
 
-            # Remove the step from the path
+            # 3d) Update direction arrow
+            dx = new_pos[0] - old_pos[0]
+            dy = new_pos[1] - old_pos[1]
+            # Invert your DIRECTION_VECTORS mapping for reverse lookup
+            inv = {v: k for k, v in Defaults.DIRECTION_VECTORS.items()}
+            self.direction = inv.get((dx, dy), self.direction)
+
+            # 3e) Pop the step from the path
             self.path.pop(0)
+
+            # 3f) Prepare for next iteration
+            old_pos = new_pos
+
+        # 4) After moving, respawn a DummyAgent at the last old_pos
+        dummy = DummyAgent(f"Dummy_{old_pos[0]}_{old_pos[1]}", self.model, old_pos)
+        self.model.grid.place_agent(dummy, old_pos)
+        self.model.schedule.add(dummy)
+
+        # 5) Optionally, recompute path for next tick
+        self.path = self.compute_path()
 
     def get_current_direction(self):
         return self.direction
