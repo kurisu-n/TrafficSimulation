@@ -5,24 +5,24 @@ from enum import Enum, auto
 @dataclass(frozen=True)
 class Defaults:
     # grid
-    WIDTH:  int = 120
-    HEIGHT: int = 120
+    WIDTH:  int = 200
+    HEIGHT: int = 200
     # frame
-    WALL_THICKNESS:       int   = 5
+    WALL_THICKNESS:       int   = 10
     SIDEWALK_RING_WIDTH:  int   = 2
 
     ROADS = ["R1", "R2", "R3"]
 
     # road network
     RING_ROAD_TYPE:       str = "R2"
-    HIGHWAY_OFFSET:       int   = 5
+    HIGHWAY_OFFSET:       int   = 10
     ALLOW_EXTRA_HIGHWAYS: bool = False
     EXTRA_HIGHWAY_CHANCE: float = 0.05
     R2_R3_CHANCE_SPLIT:   float = 0.5
 
     # blocks
-    MIN_BLOCK_SPACING:    int   = 8
-    MAX_BLOCK_SPACING:    int   = 16
+    MIN_BLOCK_SPACING:    int   = 12
+    MAX_BLOCK_SPACING:    int   = 24
     EMPTY_BLOCK_CHANCE:   float = 0.10
     # sub-blocks
     SUBBLOCK_CHANGE:      float = 0.7
@@ -32,7 +32,7 @@ class Defaults:
     SUBBLOCK_ROAD_TYPE:   str = "R3"
     # control
     OPTIMISED_INTERSECTIONS:           bool = True
-    TRAFFIC_LIGHT_RANGE:               int  = 4
+    TRAFFIC_LIGHT_RANGE:               int  = 10
     FORWARD_TRAFFIC_LIGHT_RANGE:         bool = False
 
     FORWARD_TRAFFIC_LIGHT_INTERSECTION_OPTIONS = ["Skip", "Include in Range", "Include as Extra"]

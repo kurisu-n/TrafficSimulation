@@ -45,6 +45,8 @@ class CellAgent(Agent):
         self.status = None
         self.base_color = Defaults.ZONE_COLORS.get(cell_type)
 
+        self.is_raining = False
+
         self.occupied = False
         self.block_id = None
         self.block_type = None

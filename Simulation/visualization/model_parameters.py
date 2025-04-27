@@ -70,12 +70,12 @@ model_params = {
     "_hdr_grid": h("Grid geometry"),
     sp_key(): spacer(),
     "width":  mesa.visualization.Slider(
-        name="Grid Width", value=Defaults.WIDTH, min_value=40, max_value=200, step=10,
+        name="Grid Width", value=Defaults.WIDTH, min_value=80, max_value=300, step=10,
         description="Square grid size",
     ),
     sp_key(): spacer(),
     "height": mesa.visualization.Slider(
-        name="Grid Height", value=Defaults.HEIGHT, min_value=40, max_value=200, step=10,
+        name="Grid Height", value=Defaults.HEIGHT, min_value=80, max_value=300, step=10,
         description="Square grid size",
     ),
     sp_key(): spacer(),
@@ -128,11 +128,11 @@ model_params = {
     "_hdr_blocks": h("Block layout"),
     sp_key(): spacer(),
     "min_block_spacing": mesa.visualization.Slider(
-        name="Min block size", value=Defaults.MIN_BLOCK_SPACING,  min_value=3,  max_value=12, step=1,
+        name="Min block size", value=Defaults.MIN_BLOCK_SPACING,  min_value=3,  max_value=24, step=1,
     ),
     sp_key(): spacer(),
     "max_block_spacing": mesa.visualization.Slider(
-        name="Max block size", value=Defaults.MAX_BLOCK_SPACING, min_value=8,  max_value=24, step=1,
+        name="Max block size", value=Defaults.MAX_BLOCK_SPACING, min_value=8,  max_value=48, step=1,
     ),
     sp_key(): spacer(),
     "empty_block_chance": mesa.visualization.Slider(
@@ -150,7 +150,7 @@ model_params = {
     sp_key(): spacer(),
     "min_subblock_spacing": mesa.visualization.Slider(
         name="Min sub-block spacing", value=Defaults.MIN_SUBBLOCK_SPACING,
-        min_value=2, max_value=8, step=1,
+        min_value=2, max_value=24, step=1,
     ),
     sp_key(): spacer(),
     "subblock_chance": mesa.visualization.Slider(

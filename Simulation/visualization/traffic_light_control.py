@@ -120,52 +120,54 @@ class TrafficLightControl(TextElement):
         .tl-btn:hover  {{ transform:translateY(-1px); box-shadow:0 4px 6px var(--ring); }}
         .tl-btn:active {{ transform:translateY(0);    box-shadow:0 1px 2px var(--ring) inset; }}
 
-        .go-one, .go-ilg, .go-opp, .go-all, .go-next {{ background:var(--go);   color:#fff; }}
-        .stop-one,.stop-ilg,.stop-opp,.stop-all,.stop-next{{ background:var(--stop); color:#fff; }}
+        .go-one, .go-ilg, .go-opp, .go-all, .go-neighbors {{ background:var(--go);   color:#fff; }}
+        .stop-one,.stop-ilg,.stop-opp,.stop-all,.stop-neighbors{{ background:var(--stop); color:#fff; }}
         </style>
 
         <div id="tl-card">
-          <h3>Manual Traffic-Light Control</h3>
 
           <!-- ────────── ROW 1 ────────── -->
           <div id="row-1">
         
             <!-- ◇ single traffic-light -->
-            <div class="tl-group">
-              <select id="tl_select" class="tlc-select"
-                onchange="fetch('/set_user_selected_traffic_light',{{method:'POST',
-                   headers:{{'Content-Type':'application/json'}},
-                   body:JSON.stringify({{id:this.value}})}})
-                   .then(()=>{{(document.getElementById('step_button')||
-                                document.getElementById('step')).click();}});">
-                {tl_opts}
-              </select>
-              <button class="tl-btn go-one"
-                onclick="fetch('/set_traffic_light_go',{{method:'POST'}})
-                         .then(()=>{{(document.getElementById('step_button')||
-                                      document.getElementById('step')).click();}});">Go</button>
-              <button class="tl-btn stop-one"
-                onclick="fetch('/set_traffic_light_stop',{{method:'POST'}})
-                         .then(()=>{{(document.getElementById('step_button')||
-                                      document.getElementById('step')).click();}});">STOP</button>
-            </div>
+            <div id="col-1">
+                <span class="tl-label">Individual Light</span>
+                <div class="tl-group">
+                  <select id="tl_select" class="tlc-select"
+                    onchange="fetch('/set_user_selected_traffic_light',{{method:'POST',
+                       headers:{{'Content-Type':'application/json'}},
+                       body:JSON.stringify({{id:this.value}})}})
+                       .then(()=>{{(document.getElementById('step_button')||
+                                    document.getElementById('step')).click();}});">
+                    {tl_opts}
+                  </select>
+                  <button class="tl-btn go-one"
+                    onclick="fetch('/set_traffic_light_go',{{method:'POST'}})
+                             .then(()=>{{(document.getElementById('step_button')||
+                                          document.getElementById('step')).click();}});">Go</button>
+                  <button class="tl-btn stop-one"
+                    onclick="fetch('/set_traffic_light_stop',{{method:'POST'}})
+                             .then(()=>{{(document.getElementById('step_button')||
+                                          document.getElementById('step')).click();}});">STOP</button>
+                </div>
+            </div>    
 
             <!-- ◇ global -->
-            <div class="tl-group">
-              <button class="tl-btn go-all"
-                onclick="fetch('/set_traffic_lights_go',{{method:'POST'}})
-                         .then(()=>{{(document.getElementById('step_button')||
-                                      document.getElementById('step')).click();}});">All GO</button>
-              <button class="tl-btn stop-all"
-                onclick="fetch('/set_traffic_lights_stop',{{method:'POST'}})
-                         .then(()=>{{(document.getElementById('step_button')||
-                                      document.getElementById('step')).click();}});">All STOP</button>
-              <button class="tl-btn" id="step" style="background:#fff;color:var(--purple);"
-                onclick="(document.getElementById('step_button')||this).click();">Step</button>
+            <div id="col-1">
+                <span class="tl-label">All Lights</span>
+                <div class="tl-group">
+                  <button class="tl-btn go-all"
+                    onclick="fetch('/set_traffic_lights_go',{{method:'POST'}})
+                             .then(()=>{{(document.getElementById('step_button')||
+                                          document.getElementById('step')).click();}});">GO</button>
+                  <button class="tl-btn stop-all"
+                    onclick="fetch('/set_traffic_lights_stop',{{method:'POST'}})
+                             .then(()=>{{(document.getElementById('step_button')||
+                                          document.getElementById('step')).click();}});">STOP</button>
+                </div>
             </div>
           </div>
 
-          <h5>Intersection Control</h5>
           <!-- ────────── ROW 2 ────────── -->
           <div id="row-2">
 
@@ -216,12 +218,12 @@ class TrafficLightControl(TextElement):
             <div id="col-1">
                 <span class="tl-label">Intersection and Neighbors</span>
                 <div class="tl-group">
-                  <button class="tl-btn go-next"
-                    onclick="fetch('/set_ilg_next_go',{{method:'POST'}})
+                  <button class="tl-btn go-neighbors"
+                    onclick="fetch('/set_ilg_neighbors_go',{{method:'POST'}})
                              .then(()=>{{(document.getElementById('step_button')||
                                           document.getElementById('step')).click();}});">GO</button>
-                  <button class="tl-btn stop-next"
-                    onclick="fetch('/set_ilg_next_stop',{{method:'POST'}})
+                  <button class="tl-btn stop-neighbors"
+                    onclick="fetch('/set_ilg_neighbors_stop',{{method:'POST'}})
                              .then(()=>{{(document.getElementById('step_button')||
                                           document.getElementById('step')).click();}});">STOP</button>
                 </div>
@@ -231,12 +233,12 @@ class TrafficLightControl(TextElement):
             <div id="col-1">
                 <span class="tl-label">Inter., Neighbors and Betweens</span>
                 <div class="tl-group">
-                  <button class="tl-btn go-next"
-                    onclick="fetch('/set_group_next_intermediate_go',{{method:'POST'}})
+                  <button class="tl-btn go-neighbors"
+                    onclick="fetch('/set_group_neighbors_intermediate_go',{{method:'POST'}})
                              .then(()=>{{(document.getElementById('step_button')||
                                           document.getElementById('step')).click();}});">GO</button>
-                  <button class="tl-btn stop-next"
-                    onclick="fetch('/set_group_next_intermediate_stop',{{method:'POST'}})
+                  <button class="tl-btn stop-neighbors"
+                    onclick="fetch('/set_group_neighbors_intermediate_stop',{{method:'POST'}})
                              .then(()=>{{(document.getElementById('step_button')||
                                           document.getElementById('step')).click();}});">STOP</button>
                 </div>
@@ -363,7 +365,7 @@ class SetIlgNeighborsGoHandler(_Base):
         uid = self.server.model.user_selected_intersection
         try:
             next(g for g in self.server.model.get_intersection_light_groups()
-                 if str(g.unique_id)==str(uid)).set_all_go_with_next()
+                 if str(g.unique_id)==str(uid)).set_all_go_with_neighbors()
             self._ok()
         except StopIteration:
             self._err(404, "No ILG")
@@ -373,7 +375,7 @@ class SetIlgNeighborsStopHandler(_Base):
         uid = self.server.model.user_selected_intersection
         try:
             next(g for g in self.server.model.get_intersection_light_groups()
-                 if str(g.unique_id)==str(uid)).set_all_stop_with_next()
+                 if str(g.unique_id)==str(uid)).set_all_stop_with_neighbors()
             self._ok()
         except StopIteration:
             self._err(404, "No ILG")
@@ -384,7 +386,7 @@ class SetGroupNeighborsIntermediateGoHandler(_Base):
         uid = self.server.model.user_selected_intersection
         try:
             next(g for g in self.server.model.get_intersection_light_groups()
-                 if str(g.unique_id)==str(uid)).set_all_go_with_next_and_intermediate()
+                 if str(g.unique_id)==str(uid)).set_all_go_with_neighbors_and_intermediate()
             self._ok()
         except StopIteration:
             self._err(404, "No ILG")
@@ -394,7 +396,7 @@ class SetGroupNeighborsIntermediateStopHandler(_Base):
         uid = self.server.model.user_selected_intersection
         try:
             next(g for g in self.server.model.get_intersection_light_groups()
-                 if str(g.unique_id)==str(uid)).set_all_stop_with_next_and_intermediate()
+                 if str(g.unique_id)==str(uid)).set_all_stop_with_neighbors_and_intermediate()
             self._ok()
         except StopIteration:
             self._err(404, "No ILG")
@@ -426,11 +428,11 @@ def add_traffic_light_routes(server):
             (r"/set_opp_stop",                    SetOppStopHandler,       dict(server=server)),
 
             # ILG + next
-            (r"/set_ilg_next_go",                 SetIlgNeighborsGoHandler, dict(server=server)),
-            (r"/set_ilg_next_stop",               SetIlgNeighborsStopHandler, dict(server=server)),
+            (r"/set_ilg_neighbors_go",                 SetIlgNeighborsGoHandler, dict(server=server)),
+            (r"/set_ilg_neighbors_stop",               SetIlgNeighborsStopHandler, dict(server=server)),
 
             # IGL + next + intermediate
-            (r"/set_group_next_intermediate_go",  SetGroupNeighborsIntermediateGoHandler, dict(server=server)),
-            (r"/set_group_next_intermediate_stop",SetGroupNeighborsIntermediateStopHandler, dict(server=server)),
+            (r"/set_group_neighbors_intermediate_go",  SetGroupNeighborsIntermediateGoHandler, dict(server=server)),
+            (r"/set_group_neighbors_intermediate_stop",SetGroupNeighborsIntermediateStopHandler, dict(server=server)),
         ],
     )
