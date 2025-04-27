@@ -189,6 +189,26 @@ def agent_portrayal(agent):
             else agent.base_color
         )
 
+
+    if agent.cell_type in Defaults.AVAILABLE_CITY_BLOCKS:
+        portrayal["Block ID"] = agent.block_id
+        city = agent.get_city_model()
+        cb = getattr(city, "city_blocks", {}).get(agent.block_id)
+
+        if cb is not None:
+                portrayal["Food"] = f"{int(cb.get_food_units())}/{int(cb.max_food_units)}"
+                portrayal["Waste"] = f"{int(cb.get_waste_units())}/{int(cb.max_waste_units)}"
+
+
+    if agent.cell_type == "BlockEntrance":
+        portrayal["Block ID"] = agent.block_id
+        city = agent.get_city_model()
+        cb = getattr(city, "city_blocks", {}).get(agent.block_id)
+
+    if agent.cell_type == "Sidewalk":
+        if agent.block_id is not None:
+            portrayal["Block ID"] = agent.block_id
+
     if direction_text:
         portrayal["Directions"] = direction_text
     return portrayal

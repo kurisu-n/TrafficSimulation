@@ -185,6 +185,12 @@ model_params = {
         choices=Defaults.FORWARD_TRAFFIC_LIGHT_INTERSECTION_OPTIONS,
         description="How to handle traffic light sensor range for intersections."
     ),
+    "_hdr_city_blocks": h("City Blocks"),
+    sp_key(): spacer(),
+    "gradual_city_block_resources": mesa.visualization.Checkbox(
+        name="Gradual Resources", value=Defaults.GRADUAL_CITY_BLOCK_RESOURCES,
+        description="Apply gradual production or consumption of city block resources, instead of doing a bunk per X ticks"
+    ),
     sp_key(): spacer(),
     sp_key(): spacer(),
 }

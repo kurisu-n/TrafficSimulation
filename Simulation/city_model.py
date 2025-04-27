@@ -9,6 +9,7 @@ from mesa.time import RandomActivation
 
 from Simulation.config import Defaults
 from Simulation.agents.cell import CellAgent
+from Simulation.agents.city_block import CityBlock
 from Simulation.agents.intersection_light_group import IntersectionLightGroup
 
 class CityModel(Model):
@@ -34,6 +35,7 @@ class CityModel(Model):
                  traffic_light_range = Defaults.TRAFFIC_LIGHT_RANGE,
                  forward_traffic_light_range = Defaults.FORWARD_TRAFFIC_LIGHT_RANGE,
                  forward_traffic_light_range_intersections = Defaults.FORWARD_TRAFFIC_LIGHT_INTERSECTIONS,
+                 gradual_city_block_resources = Defaults.GRADUAL_CITY_BLOCK_RESOURCES,
                  seed=None):
 
         super().__init__(seed=seed)
@@ -58,6 +60,7 @@ class CityModel(Model):
         self.traffic_light_range = traffic_light_range
         self.forward_traffic_light_range = forward_traffic_light_range
         self.forward_traffic_light_range_intersections = forward_traffic_light_range_intersections
+        self.gradual_city_block_resources = gradual_city_block_resources
 
         self.user_selected_traffic_light = None
         self.user_selected_intersection = None
@@ -99,6 +102,7 @@ class CityModel(Model):
         self._add_entrance_directions()
         self._add_traffic_lights()
         self._create_intersection_light_groups()
+        self._instantiate_city_blocks()
 
     # -------------------------------------------------------------------
     #  intersection factory
@@ -1435,6 +1439,101 @@ class CityModel(Model):
             for ix, iy in cluster:
                 ia = self.cell_contents(ix, iy)[0]  # the single Intersection CellAgent
                 ia.intersection_group = group
+
+    # ------------------------------------------------------------------
+    #  City-block construction helper
+    # ------------------------------------------------------------------
+
+      # ---------------------------------------------------------------
+      # Spawn all blocks recorded during flood-fill
+      # ---------------------------------------------------------------
+
+
+    def _instantiate_city_blocks(self) -> None:
+        """Convert every entry in ``self._blocks_data`` into a `CityBlock`."""
+
+
+        for info in self._blocks_data:
+        # ignore “Empty” blocks
+
+            if info["block_type"] not in Defaults.AVAILABLE_CITY_BLOCKS:
+                continue
+
+            self._spawn_city_block(
+            block_id = info["block_id"],
+            block_type = info["block_type"],
+            inner_coords = set(info["region"]),)
+
+    def _spawn_city_block(
+            self,
+            block_id: int,
+            block_type: str,
+            inner_coords: set[tuple[int, int]],
+    ) -> CityBlock:
+        """
+        Create a ``CityBlock`` agent, given the coordinates of every
+        *inner* buildable cell.
+
+        Parameters
+        ----------
+        block_id
+            Unique identifier for the new block (usually an int).
+        block_type
+            \"Residential\", \"Office\", … – must be one of
+            ``Defaults.AVAILABLE_CITY_BLOCKS``.
+        inner_coords
+            Coordinates **inside** the block’s perimeter *only* (no sidewalks).
+
+        Returns
+        -------
+        CityBlock
+            The freshly spawned agent.
+        """
+        grid = self.grid  # Mesa MultiGrid
+        cell_c = self.cell_contents  # tiny shorthand
+
+        # ── collect all cells that belong to the block ─────────────────
+        inner_blocks: list[CellAgent] = []
+        sidewalks: list[CellAgent] = []
+        entrances: list[CellAgent] = []
+
+        for x, y in inner_coords:
+            cell: CellAgent = cell_c(x, y)[0]
+            inner_blocks.append(cell)
+            cell.block_id = block_id
+            cell.block_type = block_type
+
+            # find immediate neighbours (4-neighbourhood is enough here)
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, ny = x + dx, y + dy
+                if not self.in_bounds(nx, ny):
+                    continue
+                nbr: CellAgent = cell_c(nx, ny)[0]
+
+                if nbr.cell_type == "Sidewalk" and nbr not in sidewalks:
+                    sidewalks.append(nbr)
+                elif nbr.cell_type == "BlockEntrance" and nbr not in entrances:
+                    entrances.append(nbr)
+
+        # ── create the agent & register it ──────────────────────────────
+        cb = CityBlock(
+            unique_id=f"CB{block_id}",
+            model=self,
+            block_type=block_type,
+            inner_blocks=inner_blocks,
+            sidewalks=sidewalks,
+            entrances=entrances,
+            gradual_resources=self.gradual_city_block_resources
+        )
+
+        self.schedule.add(cb)
+
+        # Keep a reference if that’s handy elsewhere
+        if not hasattr(self, "city_blocks"):
+            self.city_blocks: dict[int, CityBlock] = {}
+        self.city_blocks[block_id] = cb
+
+        return cb
 
     # -----------------------------------------------------------------------
     # Utilities

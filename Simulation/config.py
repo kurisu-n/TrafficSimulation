@@ -103,3 +103,10 @@ class Defaults:
         "Wall": "Outer Wall",
         "Nothing":"Empty/unused space",
     }
+
+    FOOD_CAPACITY_PER_CELL = 2  # units per inner cell
+    FOOD_CONSUMPTION_TICKS = 50  # ticks between consumption
+    WASTE_CAPACITY_PER_CELL = 1.5  # units per inner cell
+    WASTE_PRODUCTION_TICKS = 100  # ticks between production
+
+    GRADUAL_CITY_BLOCK_RESOURCES = True
