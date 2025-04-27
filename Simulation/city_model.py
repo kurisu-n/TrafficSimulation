@@ -103,6 +103,7 @@ class CityModel(Model):
         self._add_traffic_lights()
         self._create_intersection_light_groups()
         self._instantiate_city_blocks()
+        self._add_dummy_agents()
 
     # -------------------------------------------------------------------
     #  intersection factory
@@ -1538,11 +1539,11 @@ class CityModel(Model):
     def _add_dummy_agents(self):
         from Simulation.agents.dummy import DummyAgent
 
-        # … inside CityModel.__init__, after building the city grid …
         uid = 0
         for x in range(self.width):
             for y in range(self.height):
                 dummy = DummyAgent(f"Dummy_{x}_{y}", self, (x, y))
+                # place_agent will now set dummy.pos internally
                 self.grid.place_agent(dummy, (x, y))
                 self.schedule.add(dummy)
                 uid += 1

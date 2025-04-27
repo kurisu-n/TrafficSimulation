@@ -9,7 +9,7 @@ class DummyAgent(Agent):
     """
     def __init__(self, unique_id, model, pos):
         super().__init__(unique_id, model)
-        self.pos = pos
+        self._initial_pos = pos
 
     def get_portrayal(self):
         # find the CellAgent below us
@@ -17,6 +17,4 @@ class DummyAgent(Agent):
                     if isinstance(a, CellAgent))
         p = cell.get_portrayal()
         p["Layer"] = 1
-        p["Type"]  = "Vehicle Layer"
-        p["LayerName"] = "Vehicle Layer"
         return p
