@@ -1700,4 +1700,68 @@ class CityModel(Model):
         dirty = self.get_blocks_producing_waste(sort_by="waste")
         return dirty[0] if dirty else None
 
+    # ═══════════════════════════════════════════════════════════════
+    #  ENTRY / EXIT HELPERS
+    # ═══════════════════════════════════════════════════════════════
+    # ── private ────────────────────────────────────────────────────
+    @staticmethod
+    def _are_adjacent(a, b) -> bool:
+        """
+        Return True when the two CellAgent instances occupy
+        4-neighbouring grid positions (N, S, E, W).
+        """
+        (x1, y1), (x2, y2) = a.position, b.position
+        return abs(x1 - x2) + abs(y1 - y2) == 1
+
+    # ── public API ─────────────────────────────────────────────────
+    def get_start_blocks(self):
+        """
+        All cells a vehicle may **spawn** on:
+
+          • every *BlockEntrance*
+          • every *HighwayEntrance*
+        """
+        return list(self.block_entrances) + list(self.highway_entrances)
+
+    def get_exit_blocks(self):
+        """
+        All cells that qualify as an **end-point**:
+
+          • every *BlockEntrance*
+          • every *HighwayExit*
+        """
+        return list(self.block_entrances) + list(self.highway_exits)
+
+    def get_valid_exits(self, entry_cell):
+        """
+        Given a starting entrance cell, return every permissible exit:
+
+        • If *entry_cell* is a **BlockEntrance** →
+            ⟶ all other *BlockEntrances* **and** every *HighwayExit*.
+
+        • If *entry_cell* is a **HighwayEntrance** →
+            ⟶ every *BlockEntrance* **plus** every *HighwayExit*
+               that is **not adjacent** to the starting entrance.
+
+        For any other cell type the function returns an empty list.
+        """
+        if entry_cell.cell_type == "BlockEntrance":
+            exits = [be for be in self.block_entrances if be is not entry_cell]
+            exits += self.highway_exits
+            return exits
+
+        if entry_cell.cell_type == "HighwayEntrance":
+            exits = [
+                        be for be in self.block_entrances
+                        if not self._are_adjacent(be, entry_cell)
+                    ] + [
+                        hx for hx in self.highway_exits
+                        if not self._are_adjacent(hx, entry_cell)
+                    ]
+            return exits
+
+        # not a recognised start block
+        return []
+
+
 

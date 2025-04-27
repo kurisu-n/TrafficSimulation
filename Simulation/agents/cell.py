@@ -146,74 +146,75 @@ class CellAgent(Agent):
 
 
 
-def agent_portrayal(agent):
-    arrows = [Defaults.DIRECTION_ICONS.get(d, '') for d in agent.directions]
-    direction_text = ' '.join(arrows)
+    def get_portrayal(self):
+        arrows = [Defaults.DIRECTION_ICONS.get(d, '') for d in self.directions]
+        direction_text = ' '.join(arrows)
 
-    portrayal = {
-        "Shape": "rect", "w":1.0, "h":1.0, "Filled":True,
-        "Color": agent.base_color,
-        "Layer": 0,
-        "Type": agent.cell_type,
-        "Description": Defaults.DESCRIPTION_MAP.get(agent.cell_type, ""),
-    }
+        portrayal = {
+            "Shape": "rect", "w":1.0, "h":1.0, "Filled":True,
+            "Color": self.base_color,
+            "Layer": 0,
+            "Type": self.cell_type,
+            "Description": Defaults.DESCRIPTION_MAP.get(self.cell_type, ""),
+        }
 
-    if agent.cell_type in Defaults.ROADS:
-        portrayal["Assigned"] = agent.light is not None
-        portrayal["Color"] = (
-            desaturate(agent.base_color, sat_factor=0.75, light_factor=0.25)
-            if agent.light is not None and agent.light.status == "Stop"
-            else agent.base_color
-        )
+        if self.cell_type in Defaults.ROADS:
+            portrayal["Assigned"] = self.light is not None
+            portrayal["Color"] = (
+                desaturate(self.base_color, sat_factor=0.75, light_factor=0.25)
+                if self.light is not None and self.light.status == "Stop"
+                else self.base_color
+            )
 
-    if agent.cell_type=="ControlledRoad":
-        portrayal["Color"] = (
-            Defaults.ZONE_COLORS["ControlledRoadStop"]
-            if agent.status=="Stop"
-            else desaturate(agent.base_color, sat_factor=0.75, light_factor=0.25)
-        )
-        portrayal["Control State"] = agent.status
+        if self.cell_type=="ControlledRoad":
+            portrayal["Color"] = (
+                Defaults.ZONE_COLORS["ControlledRoadStop"]
+                if self.status=="Stop"
+                else desaturate(self.base_color, sat_factor=0.75, light_factor=0.25)
+            )
+            portrayal["Control State"] = self.status
 
-    if agent.cell_type =="TrafficLight":
-        portrayal["Color"] = (
-            Defaults.ZONE_COLORS["TrafficLightStop"]
-            if agent.status == "Stop"
-            else Defaults.ZONE_COLORS["TrafficLight"]
-        )
+        if self.cell_type =="TrafficLight":
+            portrayal["Color"] = (
+                Defaults.ZONE_COLORS["TrafficLightStop"]
+                if self.status == "Stop"
+                else Defaults.ZONE_COLORS["TrafficLight"]
+            )
 
-    if agent.cell_type=="Intersection":
-        portrayal["Assigned"] = agent.light is not None
-        portrayal["Intersection Group"] = None if agent.intersection_group is None else agent.intersection_group.id
-        portrayal["Color"] = (
-            desaturate(agent.base_color, sat_factor=0.75, light_factor=0.25)
-            if agent.light is not None and agent.light.status == "Stop"
-            else agent.base_color
-        )
-
-
-    if agent.cell_type in Defaults.AVAILABLE_CITY_BLOCKS:
-        portrayal["Block ID"] = agent.block_id
-        city = agent.get_city_model()
-        cb = getattr(city, "city_blocks", {}).get(agent.block_id)
-
-        if cb is not None:
-            if cb.needs_food():
-               portrayal["Food"] = (
-                            f"{int(cb.get_food_units())}/{int(cb.max_food_units)}")
-            if cb.produces_waste():
-                portrayal["Waste"] = (
-                            f"{int(cb.get_waste_units())}/{int(cb.max_waste_units)}")
+        if self.cell_type=="Intersection":
+            portrayal["Assigned"] = self.light is not None
+            portrayal["Intersection Group"] = None if self.intersection_group is None else self.intersection_group.id
+            portrayal["Color"] = (
+                desaturate(self.base_color, sat_factor=0.75, light_factor=0.25)
+                if self.light is not None and self.light.status == "Stop"
+                else self.base_color
+            )
 
 
-    if agent.cell_type == "BlockEntrance":
-        portrayal["Block ID"] = agent.block_id
-        city = agent.get_city_model()
-        cb = getattr(city, "city_blocks", {}).get(agent.block_id)
+        if self.cell_type in Defaults.AVAILABLE_CITY_BLOCKS:
+            portrayal["Block ID"] = self.block_id
+            city = self.get_city_model()
+            cb = getattr(city, "city_blocks", {}).get(self.block_id)
 
-    if agent.cell_type == "Sidewalk":
-        if agent.block_id is not None:
-            portrayal["Block ID"] = agent.block_id
+            if cb is not None:
+                if cb.needs_food():
+                   portrayal["Food"] = (
+                                f"{int(cb.get_food_units())}/{int(cb.max_food_units)}")
+                if cb.produces_waste():
+                    portrayal["Waste"] = (
+                                f"{int(cb.get_waste_units())}/{int(cb.max_waste_units)}")
 
-    if direction_text:
-        portrayal["Directions"] = direction_text
-    return portrayal
+
+        if self.cell_type == "BlockEntrance":
+            portrayal["Block ID"] = self.block_id
+            city = self.get_city_model()
+            cb = getattr(city, "city_blocks", {}).get(self.block_id)
+
+        if self.cell_type == "Sidewalk":
+            if self.block_id is not None:
+                portrayal["Block ID"] = self.block_id
+
+        if direction_text:
+            portrayal["Directions"] = direction_text
+
+        return portrayal
