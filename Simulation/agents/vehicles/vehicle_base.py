@@ -46,10 +46,18 @@ class VehicleAgent(Agent):
     #  Speed utilities
     # ------------------------------------------------------------
     def compute_speed(self) -> int:
-        """Hook for dynamic speed adjustments (weather, congestion, …)."""
+        """Return the speed allowed this tick, weather‑adjusted if needed."""
+        # Establish / keep the persistent cruising speed.
         if self.base_speed == 0:
             self.base_speed = self._sample_speed()
-        return self.base_speed
+
+        speed = self.base_speed
+
+        # --- Weather adjustment (rain) --------------------------------
+        if self.current_cell.is_raining:
+            speed = max(1, speed - Defaults.RAIN_SPEED_REDUCTION)
+
+        return speed
 
     def _sample_speed(self) -> int:
         """Pick a persistent cruising speed until the next full stop."""

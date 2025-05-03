@@ -118,4 +118,6 @@ class Defaults:
     MAX_VEHICLE_SPEED: int = 5
     VEHICLE_AWARENESS_RANGE: int = 10
 
+    RAIN_SPEED_REDUCTION = 2
+
     USE_DUMMY_AGENTS: bool = True
