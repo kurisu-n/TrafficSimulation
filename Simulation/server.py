@@ -34,17 +34,17 @@ server = ModularServer(
     model_cls = CityModel,
     visualization_elements = [canvas,
                               TrafficLightControl(),
-                              ManualVehicleControl(),
-                              CellInspectorJS(model_params["width"].value, model_params["height"].value)],
+                              ManualVehicleControl()
+                              ],
     name = "Structured Urban Grid World",
     model_params = model_params,
 )
 
 add_traffic_light_routes(server)
-add_cell_inspector(server)
 add_manual_vehicle_routes(server)
 
 print("  → Elements:", [type(el).__name__ for el in server.visualization_elements])
 print("  → Handlers:", [h[0] for h in server.handlers])
 
+server.render_schedule = 20
 server.port = get_free_port()

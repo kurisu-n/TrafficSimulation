@@ -1,7 +1,7 @@
 # traffic_light_control.py
 # =============================================================
 from __future__ import annotations
-import traceback, tornado.escape
+import tornado.escape
 from mesa.visualization.modules import TextElement
 from tornado.web import RequestHandler
 from typing import List

@@ -5,8 +5,8 @@ from enum import Enum, auto
 @dataclass(frozen=True)
 class Defaults:
     # grid
-    WIDTH:  int = 200
-    HEIGHT: int = 200
+    WIDTH:  int = 80
+    HEIGHT: int = 80
     # frame
     WALL_THICKNESS:       int   = 10
     SIDEWALK_RING_WIDTH:  int   = 2
@@ -116,4 +116,6 @@ class Defaults:
 
     MIN_VEHICLE_SPEED: int = 1
     MAX_VEHICLE_SPEED: int = 5
-    VEHICLE_AWARENESS_RANGE: int = 5
+    VEHICLE_AWARENESS_RANGE: int = 10
+
+    USE_DUMMY_AGENTS: bool = True

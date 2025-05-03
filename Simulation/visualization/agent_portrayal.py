@@ -2,10 +2,16 @@ from Simulation.agents.cell import CellAgent
 from Simulation.agents.vehicles.vehicle_base import VehicleAgent
 from Simulation.agents.dummy import DummyAgent
 
+from typing import cast, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from Simulation.city_model import CityModel
+    from Simulation.agents.cell import CellAgent
+
 # Properties from the CellAgent portrayal to exclude when showing DummyAgent
-EXCLUDE_PROPERTIES = {
-    "Shape", "Color"
-}
+EXCLUDE_PROPERTIES = {}
+RENDER_EVERY_X_STEPS = 5
+
 
 def agent_portrayal(agent):
     """
@@ -15,12 +21,11 @@ def agent_portrayal(agent):
       - DummyAgent: mirror underlying CellAgent properties on Vehicle Layer,
         excluding a small set of keys
     """
-
-    # Case 1: Dummy – show underlying cell info on vehicle layer
     if isinstance(agent, DummyAgent):
         # fetch the cell underneath
+        city_model = cast("CityModel", agent.model)
         x, y = agent.pos
-        cell = next(a for a in agent.model.grid.get_cell_list_contents([(x, y)])
+        cell = next(a for a in city_model.get_cell_contents(x, y)
                     if isinstance(a, CellAgent))
 
         cell_por = cell.get_portrayal()
@@ -28,14 +33,14 @@ def agent_portrayal(agent):
         filtered = {k: v for k, v in cell_por.items() if k not in EXCLUDE_PROPERTIES}
         # build dummy portrayal
         filtered["Layer"] = 1
+        filtered["Shape"] = "rect"
+        filtered["Color"] = "rgba(0,0,0,0)"
         return filtered
 
-    # Case 2: Real cell – city layer
     if isinstance(agent, CellAgent):
         por = agent.get_portrayal()
         return por
 
-    # Case 3: Real vehicle – vehicle layer
     if isinstance(agent, VehicleAgent):
         por = agent.get_portrayal()
         return por

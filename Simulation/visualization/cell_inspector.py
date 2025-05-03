@@ -65,7 +65,7 @@ class InspectCellHandler(RequestHandler):
             data = tornado.escape.json_decode(self.request.body)
             x, y = int(data["x"]), int(data["y"])
 
-            agents = self.server.model.cell_contents(x, y)
+            agents = self.server.model.get_cell_contents(x, y)
             if not agents:
                 info = {"x": x, "y": y, "msg": "empty"}
             else:

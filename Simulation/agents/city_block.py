@@ -5,6 +5,7 @@ from typing import List, Sequence
 from mesa import Agent
 from Simulation.config import Defaults
 from Simulation.agents.cell import CellAgent
+from Simulation.utilities import *
 
 
 class CityBlock(Agent):
@@ -34,7 +35,7 @@ class CityBlock(Agent):
     # ------------------------------------------------------------------
     def __init__(
         self,
-        unique_id: str | int,
+        custom_id: str,
         model,
         block_type: str,
         inner_blocks: Sequence[CellAgent],
@@ -42,8 +43,8 @@ class CityBlock(Agent):
         entrances: Sequence[CellAgent],
         gradual_resources: bool = False,
     ) -> None:
-        super().__init__(unique_id, model)
-        self.id = unique_id
+        super().__init__(str_to_unique_int(custom_id), model)
+        self.id = custom_id
         self.block_type = block_type
         self._inner_blocks: List[CellAgent] = list(inner_blocks)
         self._sidewalks: List[CellAgent] = list(sidewalks)

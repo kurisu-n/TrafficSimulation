@@ -1,14 +1,19 @@
-from typing import Dict, List, Set
+from typing import Dict, List, Set, cast, TYPE_CHECKING
 from mesa import Agent
 from Simulation.config import Defaults
+from Simulation.utilities import *
+
+if TYPE_CHECKING:
+    from Simulation.city_model import CityModel
+    from Simulation.agents.cell import CellAgent
 
 
 class IntersectionLightGroup(Agent):
     """Bundle the TrafficLight agents that guard one road intersection."""
 
-    def __init__(self, unique_id: str, model, traffic_lights: List[Agent]):
-        super().__init__(unique_id, model)
-        self.id = unique_id
+    def __init__(self, custom_id: str, model, traffic_lights: List[Agent]):
+        super().__init__(str_to_unique_int(custom_id), model)
+        self.id = custom_id
         self.traffic_lights = traffic_lights
         self.neighbor_groups: Dict[str, "IntersectionLightGroup"] | None = None
         self.intermediate_groups: Set["IntersectionLightGroup"] | None = None
@@ -19,7 +24,7 @@ class IntersectionLightGroup(Agent):
     # ------------------------------------------------------------------
     def populate_links(self, max_depth: int = 1000) -> None:
         """Fill *next*, *intermediate* and *opposite* group look-ups."""
-        model = self.model
+        model = cast("CityModel", self.model)
 
         # ── helpers ──────────────────────────────────────────────────────
         def _band_or_single(idx, bands):
@@ -28,23 +33,23 @@ class IntersectionLightGroup(Agent):
 
         def blocks_all_lanes(ix, iy, d):
             def _band_clear(x0, x1, y0, y1):
-                return all(model._is_type(xx, yy, "Intersection")
+                return all(model.is_type(xx, yy, "Intersection")
                            for yy in range(y0, y1 + 1)
                            for xx in range(x0, x1 + 1))
 
             if d in ("N", "S"):
                 vx0, vx1, *_ = _band_or_single(ix, model.vertical_bands)
                 if vx1 == vx0:
-                    good_v = model._is_type(vx0, iy, "Intersection")
+                    good_v = model.is_type(vx0, iy, "Intersection")
                     hy0, hy1, *_ = _band_or_single(iy, model.horizontal_bands)
-                    return good_v and (hy1 != hy0 or model._is_type(ix, hy0, "Intersection"))
+                    return good_v and (hy1 != hy0 or model.is_type(ix, hy0, "Intersection"))
                 return _band_clear(vx0, vx1, iy, iy)
 
             hy0, hy1, *_ = _band_or_single(iy, model.horizontal_bands)
             if hy1 == hy0:
-                good_h = model._is_type(ix, hy0, "Intersection")
+                good_h = model.is_type(ix, hy0, "Intersection")
                 vx0, vx1, *_ = _band_or_single(ix, model.vertical_bands)
-                return good_h and (vx1 != vx0 or model._is_type(vx0, iy, "Intersection"))
+                return good_h and (vx1 != vx0 or model.is_type(vx0, iy, "Intersection"))
             return _band_clear(ix, ix, hy0, hy1)
 
         # ── containers ───────────────────────────────────────────────────
@@ -55,10 +60,11 @@ class IntersectionLightGroup(Agent):
         # ── pick any diagonal-adjacent intersection as start ─────────────
         diag_intersections = []
         for tl in self.traffic_lights:
+            tl = cast("CellAgent", tl)
             lx, ly = tl.position
             for dx, dy in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
                 nx, ny = lx + dx, ly + dy
-                if model.in_bounds(nx, ny) and model._is_type(nx, ny, "Intersection"):
+                if model.in_bounds(nx, ny) and model.is_type(nx, ny, "Intersection"):
                     diag_intersections.append((nx, ny))
 
         for cx, cy in diag_intersections:
@@ -68,7 +74,7 @@ class IntersectionLightGroup(Agent):
                     x, y = model.next_cell_in_direction(x, y, d)
                     if not model.in_bounds(x, y):
                         break
-                    cell = model.cell_contents(x, y)[0]
+                    cell = model.get_cell_contents(x, y)[0]
                     if cell.cell_type != "Intersection":
                         steps += 1
                         continue
@@ -90,14 +96,15 @@ class IntersectionLightGroup(Agent):
                      "horizontal": {"E": [], "W": []}}
 
         for tl in self.traffic_lights:
+            tl = cast("CellAgent", tl)
             for cb in tl.controlled_blocks:
                 cbx, cby = cb.position
                 for d in cb.directions:
                     nx, ny = model.next_cell_in_direction(cbx, cby, d)
                     if not model.in_bounds(nx, ny):
                         continue
-                    if model.cell_contents(nx, ny)[0].cell_type == "Intersection" and \
-                            getattr(model.cell_contents(nx, ny)[0], "intersection_group", None) is self:
+                    if model.get_cell_contents(nx, ny)[0].cell_type == "Intersection" and \
+                            getattr(model.get_cell_contents(nx, ny)[0], "intersection_group", None) is self:
                         axis = "vertical" if d in ("N", "S") else "horizontal"
                         axis_dirs[axis][d].append(tl)
                         break          # one direction per light is enough

@@ -1,30 +1,11 @@
 # cell.py
 from typing import cast
-
 from mesa import Agent
-import colorsys
-import matplotlib.colors as mcolors
 from Simulation.config import Defaults
+from collections import deque
+from Simulation.utilities import *
 
-def _hex_to_rgb(h):
-    h = h.lstrip('#')
-    return tuple(int(h[i:i+2], 16) / 255.0 for i in (0, 2, 4))
 
-def _rgb_to_hex(rgb):
-    return '#{:02x}{:02x}{:02x}'.format(
-        int(rgb[0] * 255), int(rgb[1] * 255), int(rgb[2] * 255)
-    )
-
-def desaturate(color, sat_factor=0.5, light_factor=0.0):
-    if isinstance(color, str) and color.startswith('#'):
-        r, g, b = _hex_to_rgb(color)
-    else:
-        r, g, b = mcolors.to_rgb(color)
-    h, l, s = colorsys.rgb_to_hls(r, g, b)
-    s *= sat_factor
-    l = min(1.0, l + light_factor)
-    r2, g2, b2 = colorsys.hls_to_rgb(h, l, s)
-    return _rgb_to_hex((r2, g2, b2))
 
 class CellAgent(Agent):
     """
@@ -37,9 +18,9 @@ class CellAgent(Agent):
       - ControlledRoad
       - Wall, Sidewalk, Zone blocks
     """
-    def __init__(self, unique_id, model, position, cell_type):
-        super().__init__(unique_id, model)
-        self.id = unique_id
+    def __init__(self, custom_id, model, position, cell_type):
+        super().__init__(str_to_unique_int(custom_id), model)
+        self.id = custom_id
         self.position = position
         self.cell_type = cell_type
         self.directions = []
@@ -93,31 +74,36 @@ class CellAgent(Agent):
         for d in self.directions:
             nx, ny = self.get_city_model().next_cell_in_direction(x, y, d)
             if self.get_city_model().in_bounds(nx, ny):
-                nbr = self.get_city_model().grid.get_cell_list_contents((nx, ny))[0]
+                nbr = self.get_city_model().get_cell_contents((nx, ny))[0]
                 nbrs.setdefault(d, []).append(nbr)
         return nbrs
 
-    def leads_to(self, other: "CellAgent", visited=None) -> bool:
-        """
-        Return True if there is a directed path of road‐arrows from self to other.
-        """
-        if visited is None:
-            visited = set()
-        # If we’ve arrived…
-        if self is other:
-            return True
-        visited.add(self)
-        # Explore every outgoing arrow
-        x, y = self.get_position()
-        for d in self.directions:
-            nx, ny = self.get_city_model().next_cell_in_direction(x, y, d)
-            if not self.get_city_model().in_bounds(nx, ny):
-                continue
-            nbr = self.get_city_model().grid.get_cell_list_contents((nx, ny))[0]
-            if nbr in visited:
-                continue
-            if nbr.leads_to(other, visited):
+    def leads_to(self, other: "CellAgent") -> bool:
+        city_model = self.get_city_model()
+        queue = deque([self])
+        visited = {self}
+
+        while queue:
+            current = queue.popleft()
+            if current is other:
                 return True
+
+            for d in current.directions:
+                nx, ny = city_model.next_cell_in_direction(*current.position, d)
+                if not city_model.in_bounds(nx, ny):
+                    continue
+
+                # Cache neighbor to avoid frequent grid access
+                neighbors = city_model.get_cell_contents(nx, ny)
+                if not neighbors:
+                    continue
+                neighbor = neighbors[0]  # Extract single CellAgent
+                if neighbor in visited:
+                    continue
+
+                visited.add(neighbor)
+                queue.append(neighbor)
+
         return False
 
     def directly_leads_to(self, other: "CellAgent") -> bool:
@@ -126,7 +112,7 @@ class CellAgent(Agent):
             nx, ny = self.get_city_model().next_cell_in_direction(x,y,d)
             if not self.get_city_model().in_bounds(nx, ny):
                 continue
-            nbr = self.get_city_model().grid.get_cell_list_contents((nx, ny))[0]
+            nbr = self.get_city_model().get_cell_contents((nx, ny))[0]
             if nbr is other:
                 return True
 
