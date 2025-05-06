@@ -5,17 +5,17 @@ from enum import Enum, auto
 @dataclass(frozen=True)
 class Defaults:
     # grid
-    WIDTH:  int = 80
-    HEIGHT: int = 80
+    WIDTH:  int = 100
+    HEIGHT: int = 100
     # frame
-    WALL_THICKNESS:       int   = 10
+    WALL_THICKNESS:       int   = 4
     SIDEWALK_RING_WIDTH:  int   = 2
 
     ROADS = ["R1", "R2", "R3"]
 
     # road network
     RING_ROAD_TYPE:       str = "R2"
-    HIGHWAY_OFFSET:       int   = 10
+    HIGHWAY_OFFSET:       int   = 4
     ALLOW_EXTRA_HIGHWAYS: bool = False
     EXTRA_HIGHWAY_CHANCE: float = 0.05
     R2_R3_CHANCE_SPLIT:   float = 0.5
@@ -114,10 +114,35 @@ class Defaults:
 
     GRADUAL_CITY_BLOCK_RESOURCES = True
 
+    RAIN_SPEED_REDUCTION = 2
+
+    USE_DUMMY_AGENTS: bool = False
+    CACHE_CELL_PORTRAYAL: bool = False
+    CACHED_TYPES = [AVAILABLE_CITY_BLOCKS, ROAD_LIKE_TYPES, "Wall","Nothing","Sidewalk"]
+
     MIN_VEHICLE_SPEED: int = 1
     MAX_VEHICLE_SPEED: int = 5
     VEHICLE_AWARENESS_RANGE: int = 10
 
-    RAIN_SPEED_REDUCTION = 2
+    VEHICLE_BASE_COLOR = "black"
+    VEHICLE_PARKED_COLOR = "seagreen"
+    VEHICLE_COLLISION_COLOR = "red"
+    VEHICLE_MALFUNCTION_COLOR = "yellow"
 
-    USE_DUMMY_AGENTS: bool = True
+    VEHICLE_MALFUNCTION_CHANCE: float = 0.05
+    VEHICLE_MALFUNCTION_DURATION: int = 10
+
+    VEHICLE_FRONT_COLLISION_CHANCE: float = 0.05
+    VEHICLE_SIDE_COLLISION_CHANCE: float = 0.05
+    VEHICLE_COLLISION_DURATION: int = 10
+
+    VEHICLE_OVERTAKE_OPPOSITE_LANE = True
+
+
+
+
+
+
+
+
+

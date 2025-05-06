@@ -7,6 +7,7 @@ from mesa import Model
 from mesa.space import MultiGrid
 from mesa.time import RandomActivation
 
+from Simulation.agents.vehicles.vehicle_base import VehicleAgent
 from Simulation.config import Defaults
 from Simulation.agents.cell import CellAgent
 from Simulation.agents.city_block import CityBlock
@@ -38,6 +39,7 @@ class CityModel(Model):
                  forward_traffic_light_range_intersections = Defaults.FORWARD_TRAFFIC_LIGHT_INTERSECTIONS,
                  gradual_city_block_resources = Defaults.GRADUAL_CITY_BLOCK_RESOURCES,
                  use_dummy_agents = Defaults.USE_DUMMY_AGENTS,
+                 cache_cell_portrayal = Defaults.CACHE_CELL_PORTRAYAL,
                  seed=None):
 
         super().__init__(seed=seed)
@@ -65,12 +67,11 @@ class CityModel(Model):
         self.gradual_city_block_resources = gradual_city_block_resources
 
         self.use_dummy_agents = use_dummy_agents
+        self.cache_cell_portrayal = cache_cell_portrayal
 
         self.user_selected_traffic_light = None
         self.user_selected_intersection = None
         self.user_selected_opposite = None
-
-
 
         self.grid = MultiGrid(self.width, self.height, torus=False)
         self.schedule = RandomActivation(self)
@@ -1638,6 +1639,42 @@ class CityModel(Model):
                 # clear pos so no warning on next place
                 a.pos = None
                 break
+
+    def place_vehicle(self, vehicle: VehicleAgent, pos: tuple[int, int]):
+        """Place a new VehicleAgent at the vacated position."""
+        vehicle.current_cell = self.get_cell_contents(pos[0], pos[1])[0]
+        vehicle.current_cell.occupied = True
+        self.remove_dummy(pos[0], pos[1])
+        self.grid.place_agent(vehicle, vehicle.current_cell.get_position())
+        self.schedule.add(vehicle)
+
+    def remove_vehicle(self, vehicle: VehicleAgent):
+        v_pos = None
+
+        if vehicle.current_cell is not None:
+            vehicle.current_cell.occupied = False
+            v_pos = vehicle.current_cell.get_position()
+
+        self.grid.remove_agent(vehicle)
+        self.schedule.remove(vehicle)
+
+        if self.use_dummy_agents and  v_pos is not None:
+            self.place_dummy(v_pos[0], v_pos[1])
+
+    def move_vehicle(self, vehicle: VehicleAgent, new_cell: CellAgent, new_pos: tuple[int, int], old_pos: tuple[int, int]):
+        if self.use_dummy_agents:
+            self.remove_dummy(new_pos[0], new_pos[1])
+
+        if vehicle.current_cell is not None:
+            vehicle.current_cell.occupied = False
+            vehicle.current_cell = new_cell
+
+        new_cell.occupied = True
+        self.grid.move_agent(vehicle, new_pos)
+
+        if self.use_dummy_agents and old_pos is not None:
+            self.place_dummy(old_pos[0], old_pos[1])
+
 
     def get_cell_contents(self, x: int, y: int) -> List[CellAgent]:
         if self.cell_agent_cache is not None:

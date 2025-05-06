@@ -19,37 +19,38 @@ class IntersectionLightGroup(Agent):
         self.intermediate_groups: Set["IntersectionLightGroup"] | None = None
         self.opposite_pairs: dict[str, list] | None = None
 
+        self.city_model = cast("CityModel", self.model)
+
     # ------------------------------------------------------------------
     # Link discovery
     # ------------------------------------------------------------------
     def populate_links(self, max_depth: int = 1000) -> None:
         """Fill *next*, *intermediate* and *opposite* group look-ups."""
-        model = cast("CityModel", self.model)
 
         # ── helpers ──────────────────────────────────────────────────────
         def _band_or_single(idx, bands):
-            band = model._find_band_covering(idx, bands)
+            band = self.city_model._find_band_covering(idx, bands)
             return band if band else (idx, idx, "R4", None)
 
         def blocks_all_lanes(ix, iy, d):
             def _band_clear(x0, x1, y0, y1):
-                return all(model.is_type(xx, yy, "Intersection")
+                return all(self.city_model.is_type(xx, yy, "Intersection")
                            for yy in range(y0, y1 + 1)
                            for xx in range(x0, x1 + 1))
 
             if d in ("N", "S"):
-                vx0, vx1, *_ = _band_or_single(ix, model.vertical_bands)
+                vx0, vx1, *_ = _band_or_single(ix, self.city_model.vertical_bands)
                 if vx1 == vx0:
-                    good_v = model.is_type(vx0, iy, "Intersection")
-                    hy0, hy1, *_ = _band_or_single(iy, model.horizontal_bands)
-                    return good_v and (hy1 != hy0 or model.is_type(ix, hy0, "Intersection"))
+                    good_v = self.city_model.is_type(vx0, iy, "Intersection")
+                    hy0, hy1, *_ = _band_or_single(iy, self.city_model.horizontal_bands)
+                    return good_v and (hy1 != hy0 or self.city_model.is_type(ix, hy0, "Intersection"))
                 return _band_clear(vx0, vx1, iy, iy)
 
-            hy0, hy1, *_ = _band_or_single(iy, model.horizontal_bands)
+            hy0, hy1, *_ = _band_or_single(iy, self.city_model.horizontal_bands)
             if hy1 == hy0:
-                good_h = model.is_type(ix, hy0, "Intersection")
-                vx0, vx1, *_ = _band_or_single(ix, model.vertical_bands)
-                return good_h and (vx1 != vx0 or model.is_type(vx0, iy, "Intersection"))
+                good_h = self.city_model.is_type(ix, hy0, "Intersection")
+                vx0, vx1, *_ = _band_or_single(ix, self.city_model.vertical_bands)
+                return good_h and (vx1 != vx0 or self.city_model.is_type(vx0, iy, "Intersection"))
             return _band_clear(ix, ix, hy0, hy1)
 
         # ── containers ───────────────────────────────────────────────────
@@ -64,17 +65,17 @@ class IntersectionLightGroup(Agent):
             lx, ly = tl.position
             for dx, dy in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
                 nx, ny = lx + dx, ly + dy
-                if model.in_bounds(nx, ny) and model.is_type(nx, ny, "Intersection"):
+                if self.city_model.in_bounds(nx, ny) and self.city_model.is_type(nx, ny, "Intersection"):
                     diag_intersections.append((nx, ny))
 
         for cx, cy in diag_intersections:
             for d in Defaults.AVAILABLE_DIRECTIONS:  # N,S,E,W
                 x, y, steps = cx, cy, 0
                 while steps < max_depth:
-                    x, y = model.next_cell_in_direction(x, y, d)
-                    if not model.in_bounds(x, y):
+                    x, y = self.city_model.next_cell_in_direction(x, y, d)
+                    if not self.city_model.in_bounds(x, y):
                         break
-                    cell = model.get_cell_contents(x, y)[0]
+                    cell = self.city_model.get_cell_contents(x, y)[0]
                     if cell.cell_type != "Intersection":
                         steps += 1
                         continue
@@ -100,11 +101,11 @@ class IntersectionLightGroup(Agent):
             for cb in tl.controlled_blocks:
                 cbx, cby = cb.position
                 for d in cb.directions:
-                    nx, ny = model.next_cell_in_direction(cbx, cby, d)
-                    if not model.in_bounds(nx, ny):
+                    nx, ny = self.city_model.next_cell_in_direction(cbx, cby, d)
+                    if not self.city_model.in_bounds(nx, ny):
                         continue
-                    if model.get_cell_contents(nx, ny)[0].cell_type == "Intersection" and \
-                            getattr(model.get_cell_contents(nx, ny)[0], "intersection_group", None) is self:
+                    if self.city_model.get_cell_contents(nx, ny)[0].cell_type == "Intersection" and \
+                            getattr(self.city_model.get_cell_contents(nx, ny)[0], "intersection_group", None) is self:
                         axis = "vertical" if d in ("N", "S") else "horizontal"
                         axis_dirs[axis][d].append(tl)
                         break          # one direction per light is enough

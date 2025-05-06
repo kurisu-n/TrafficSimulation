@@ -35,10 +35,25 @@ class CellAgent(Agent):
         self.highway_id = None
         self.highway_orientation = None
 
-        # for intersections controlled by traffic lights:
+        self.intersection_group = None
         self.light = None
         self.assigned_road_blocks = []
         self.controlled_blocks = []
+
+        self._cached_portrayal: dict | None = None
+
+    def _is_cacheable(self) -> bool:
+        """
+        Return True when cell_type is contained (even inside a nested
+        list / set / tuple) in Defaults.CACHED_TYPES.
+        """
+        for entry in Defaults.CACHED_TYPES:
+            if isinstance(entry, (list, set, tuple)):
+                if self.cell_type in entry:
+                    return True
+            elif self.cell_type == entry:
+                return True
+        return False
 
     def step(self):
         pass
@@ -133,6 +148,14 @@ class CellAgent(Agent):
 
 
     def get_portrayal(self):
+        # ① return cached copy when allowed
+        if (
+            self.get_city_model().cache_cell_portrayal         # global flag
+            and self._cached_portrayal is not None             # already built
+            and self._is_cacheable()                           # type whitelisted
+        ):
+            return self._cached_portrayal
+
         arrows = [Defaults.DIRECTION_ICONS.get(d, '') for d in self.directions]
         direction_text = ' '.join(arrows)
 
@@ -202,5 +225,8 @@ class CellAgent(Agent):
 
         if direction_text:
             portrayal["Directions"] = direction_text
+
+        if self.get_city_model().cache_cell_portrayal and self._is_cacheable():
+            self._cached_portrayal = dict(portrayal)
 
         return portrayal

@@ -108,23 +108,51 @@ class SetUserTargetSelectionHandler(_Base):
         self._ok()
 
 class CreateVehicleHandler(_Base):
+    """HTTP handler that spawns a new VehicleAgent
+    ------------------------------------------------
+    Adds a safety guard: if the user‑selected *start* Cell is already
+    occupied by another vehicle, the request is rejected with **409 Conflict**
+    instead of quietly stacking two cars in the same spot.
+    """
+
     def post(self):
         model = self.server.model
+
+        # 1️⃣ Resolve the chosen start & target cells ------------------------
         try:
-            start = next(s for s in model.get_start_blocks()
-                         if str(s.id) == str(model.user_selected_start))
-            target = next(t for t in model.get_valid_exits(start)
-                          if str(t.id) == str(model.user_selected_target))
+            start = next(
+                s for s in model.get_start_blocks()
+                if str(s.id) == str(model.user_selected_start)
+            )
+            target = next(
+                t for t in model.get_valid_exits(start)
+                if str(t.id) == str(model.user_selected_target)
+            )
         except StopIteration:
-            self._err(404, 'Invalid start or target')
+            self._err(404, "Invalid start or target")
             return
-        if not hasattr(model, 'vehicle_count'):
+
+        # 2️⃣ NEW: Abort if start cell is already occupied -------------------
+        # The CellAgent interface exposes an ``occupied`` boolean that is
+        # set to *True* whenever a vehicle is currently present in that cell.
+        if getattr(start, "occupied", False):
+            # 409 ‑ Conflict: the request cannot be completed because it
+            # would result in a resource conflict on the server.
+            self._err(409, "Selected start block is currently occupied")
+            return
+
+        # 3️⃣ Create a new vehicle ------------------------------------------
+        if not hasattr(model, "vehicle_count"):
             model.vehicle_count = 0
         model.vehicle_count += 1
         vid = f"V{model.vehicle_count}"
+
         from Simulation.agents.vehicles.vehicle_base import VehicleAgent
         VehicleAgent(vid, model, start, target)
+
+        # 4️⃣ Respond OK ------------------------------------------------------
         self._ok()
+
 
 # =============================================================
 #  ⚑  ROUTE REGISTRATION
