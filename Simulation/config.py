@@ -18,12 +18,11 @@ class Defaults:
     HIGHWAY_OFFSET:       int   = 4
     ALLOW_EXTRA_HIGHWAYS: bool = False
     EXTRA_HIGHWAY_CHANCE: float = 0.05
-    R2_R3_CHANCE_SPLIT:   float = 0.5
+    R2_R3_CHANCE_SPLIT:   float = 0.7
 
     # blocks
     MIN_BLOCK_SPACING:    int   = 12
     MAX_BLOCK_SPACING:    int   = 24
-    EMPTY_BLOCK_CHANCE:   float = 0.10
     # sub-blocks
     SUBBLOCK_CHANGE:      float = 0.7
     CARVE_SUBBLOCK_ROADS: bool  = True
@@ -45,6 +44,15 @@ class Defaults:
     }
 
     AVAILABLE_CITY_BLOCKS = ["Residential", "Office", "Market", "Leisure", "Other"]
+
+    CITY_BLOCK_CHANCE = {
+        "Residential": 0.25,
+        "Office": 0.25,
+        "Market": 0.2,
+        "Leisure": 0.2,
+        "Other": 0.1,
+        "Empty": 0.0
+    }
 
     AVAILABLE_DIRECTIONS = ["N", "S", "E", "W"]
 
@@ -96,8 +104,8 @@ class Defaults:
         "R2": "saddlebrown",
         "R3": "darkgreen",
         "Intersection": "yellow",
-        "HighwayEntrance": "royalblue",
-        "HighwayExit": "blue",
+        "HighwayEntrance": "blue",
+        "HighwayExit": "royalblue",
         "TrafficLight": "lime",
         "TrafficLightStop": "red",
         "ControlledRoad": "thistle",
@@ -155,7 +163,7 @@ class Defaults:
     VEHICLE_OBSTACLE_PENALTY_STOP = 500
 
     VEHICLE_BASE_COLOR = "black"
-    VEHICLE_PARKED_COLOR = "seagreen"
+    VEHICLE_PARKED_COLOR = "aliceblue"
 
     VEHICLE_CONTRAFLOW_OVERTAKE_ACTIVE = True
     VEHICLE_CONTRAFLOW_PENALTY = 500
@@ -172,6 +180,121 @@ class Defaults:
     VEHICLE_SIDESWIPE_COLLISION_DURATION: int = 600
 
     VEHICLE_COLLISION_COLOR = "red"
+
+    # SERVICE VEHICLE SETTINGS
+
+    SERVICE_VEHICLE_BASE_COLOR = "darkolivegreen"
+    SERVICE_VEHICLE_MAX_LOAD_FOOD: float = 50.0
+    SERVICE_VEHICLE_MAX_LOAD_WASTE: float = 250.0
+    SERVICE_VEHICLE_LOAD_TIME: int = 20
+
+    # CITY FLOW SETTINGS
+
+    # ──────────────────────────────────────────────────────────────────────────────
+    # 1) Zone & transition definitions
+    # ──────────────────────────────────────────────────────────────────────────────
+
+    # Helper to map the 2-letter codes in your spec to block_type strings
+    ABBR = {
+        "Res": "Residential",
+        "Off": "Office",
+        "Mar": "Market",
+        "Lei": "Leisure",
+        "Oth": "Other"
+    }
+
+    # Define each 3-hour zone with its through-prob and a dict of internal transitions
+    TIME_ZONES = [
+        {  # Zone 1: 06:00–09:00
+            "start_hour": 6, "end_hour": 9,
+            "through_prob": 0.15,
+            "internal": {
+                ("Res", "Off"): 0.05,
+                ("Res", "Mar"): 0.05,
+                ("Res", "Lei"): 0.02,
+                ("Res", "Oth"): 0.03,
+            },
+        },
+        {  # Zone 2: 09:00–12:00
+            "start_hour": 9, "end_hour": 12,
+            "through_prob": 0.20,
+            "internal": {
+                ("Res", "Mar"): 0.10,
+                ("Res", "Oth"): 0.04,
+                ("Off", "Oth"): 0.06,
+            },
+        },
+        {  # Zone 3: 12:00–15:00
+            "start_hour": 12, "end_hour": 15,
+            "through_prob": 0.15,
+            "internal": {
+                ("Res", "Mar"): 0.07,
+                ("Res", "Oth"): 0.03,
+                ("Off", "Oth"): 0.05,
+            },
+        },
+        {  # Zone 4: 15:00–18:00
+            "start_hour": 15, "end_hour": 18,
+            "through_prob": 0.15,
+            "internal": {
+                ("Res", "Mar"): 0.03,
+                ("Off", "Oth"): 0.05,
+                ("Mar", "Oth"): 0.05,
+                ("Lei", "Oth"): 0.02,
+            },
+        },
+        {  # Zone 5: 18:00–21:00
+            "start_hour": 18, "end_hour": 21,
+            "through_prob": 0.12,
+            "internal": {
+                ("Res", "Oth"): 0.02,
+                ("Res", "Lei"): 0.02,
+                ("Off", "Lei"): 0.02,
+                ("Mar", "Lei"): 0.02,
+                ("Oth", "Lei"): 0.02,
+                ("Mar", "Oth"): 0.01,
+                ("Lei", "Oth"): 0.01,
+            },
+        },
+        {  # Zone 6: 21:00–24:00
+            "start_hour": 21, "end_hour": 24,
+            "through_prob": 0.10,
+            "internal": {
+                ("Off", "Res"): 0.03,
+                ("Mar", "Res"): 0.03,
+                ("Lei", "Res"): 0.02,
+                ("Oth", "Res"): 0.02,
+            },
+        },
+        {  # Zone 7: 00:00–03:00
+            "start_hour": 0, "end_hour": 3,
+            "through_prob": 0.08,
+            "internal": {
+                ("Off", "Res"): 0.02,
+                ("Lei", "Res"): 0.04,
+                ("Oth", "Res"): 0.01,
+                ("Res", "Lei"): 0.01,
+            },
+        },
+        {  # Zone 8: 03:00–06:00
+            "start_hour": 3, "end_hour": 6,
+            "through_prob": 0.05,
+            "internal": {
+                ("Res", "Mar"): 0.02,
+                ("Res", "Lei"): 0.02,
+                ("Res", "Oth"): 0.01,
+            },
+        },
+    ]
+
+    TIME_PER_STEP_IN_SECONDS = 6
+    SIMULATION_STARTING_TIME_OF_DAY_HOURS = 0
+    SIMULATION_STARTING_TIME_OF_DAY_MINUTES = 0
+
+    INTERNAL_POPULATION = 100000
+    PASSING_POPULATION_PER_DAY = 24000
+    TOTAL_SERVICE_VEHICLES_FOOD = 50
+    TOTAL_SERVICE_VEHICLES_WASTE = 50
 
     # OPTIMIZATION AND DEBUGGING
 

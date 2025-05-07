@@ -146,6 +146,60 @@ class CityBlock(Agent):
         self._update_food()
         self._update_waste()
 
+    def get_service_road_cell(self, model) -> CellAgent | None:
+        """
+        Starting from each BlockEntrance, alternate scanning its adjacent
+        sidewalk cells (that belong to this block) until you find a
+        neighboring road cell of type R1/R2/R3 that isn’t occupied.
+        Returns that road CellAgent, or None if none is available.
+        """
+        from Simulation.config import Defaults
+        from Simulation.agents.cell import CellAgent
+
+        for ent in self._entrances:
+            x0, y0 = ent.get_position()
+            # collect only the sidewalks that were registered for this block
+            sidewalks: list[CellAgent] = []
+            for d, (dx, dy) in Defaults.DIRECTION_VECTORS.items():
+                nx, ny = x0 + dx, y0 + dy
+                if not model.in_bounds(nx, ny):
+                    continue
+                nbrs = model.get_cell_contents(nx, ny)
+                if not nbrs:
+                    continue
+                cell = nbrs[0]
+                if cell.cell_type == "Sidewalk" and cell in self._sidewalks:
+                    sidewalks.append(cell)
+
+            # alternate from start/end of the list
+            i, j, toggle = 0, len(sidewalks) - 1, True
+            while i <= j:
+                sw = sidewalks[i] if toggle else sidewalks[j]
+
+                # look for *one* adjacent road cell off this sidewalk
+                for d2, (dx2, dy2) in Defaults.DIRECTION_VECTORS.items():
+                    rx, ry = sw.get_position()[0] + dx2, sw.get_position()[1] + dy2
+                    if not model.in_bounds(rx, ry):
+                        continue
+                    rcands = model.get_cell_contents(rx, ry)
+                    if not rcands:
+                        continue
+                    road = rcands[0]
+                    # only basic roads (R1/R2/R3) and must be free
+                    if road.cell_type in Defaults.ROADS and not getattr(road, "occupied", False):
+                        return road
+
+                # advance pointers & flip
+                if toggle:
+                    i += 1
+                else:
+                    j -= 1
+                toggle = not toggle
+
+        # no valid service road found around any entrance
+        return None
+
+
     # ------------------------------------------------------------------
     def __repr__(self):
         return (

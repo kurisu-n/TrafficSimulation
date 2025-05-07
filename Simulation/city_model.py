@@ -27,7 +27,6 @@ class CityModel(Model):
                  min_block_spacing = Defaults.MIN_BLOCK_SPACING,
                  max_block_spacing = Defaults.MAX_BLOCK_SPACING,
                  optimized_intersections = Defaults.OPTIMISED_INTERSECTIONS,
-                 empty_block_chance = Defaults.EMPTY_BLOCK_CHANCE,
                  carve_subblock_roads = Defaults.CARVE_SUBBLOCK_ROADS,
                  subblock_roads_have_intersections = Defaults.SUBBLOCK_ROADS_HAVE_INTERSECTIONS,
                  subblock_chance = Defaults.SUBBLOCK_CHANGE,
@@ -55,7 +54,6 @@ class CityModel(Model):
         self.min_block_spacing = min_block_spacing
         self.max_block_spacing = max_block_spacing
         self.optimized_intersections = optimized_intersections
-        self.empty_block_chance = empty_block_chance
         self.carve_subblock_roads = carve_subblock_roads
         self.subblock_chance = subblock_chance
         self.subblock_road_type = subblock_road_type
@@ -686,10 +684,10 @@ class CityModel(Model):
                 if w_bb < 3 or h_bb < 3:
                     block_type = "Empty"
                 else:
-                    if random.random() < (1 - self.empty_block_chance):
-                        block_type = random.choice(Defaults.AVAILABLE_CITY_BLOCKS)
-                    else:
-                        block_type = "Empty"
+                    types = Defaults.AVAILABLE_CITY_BLOCKS
+                    weights = [Defaults.CITY_BLOCK_CHANCE[bt] for bt in types]
+                    block_type = random.choices(types, weights=weights, k=1)[0]
+
 
                 # — Fill every cell in region with that block_type —
                 for bx, by in region:
@@ -1532,7 +1530,7 @@ class CityModel(Model):
 
         # ── create the agent & register it ──────────────────────────────
         cb = CityBlock(
-            custom_id=f"CB{block_id}",
+            custom_id=f"CB_{block_id}",
             model=self,
             block_type=block_type,
             inner_blocks=inner_blocks,

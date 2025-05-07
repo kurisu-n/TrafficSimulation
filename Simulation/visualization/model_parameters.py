@@ -135,11 +135,6 @@ model_params = {
         name="Max block size", value=Defaults.MAX_BLOCK_SPACING, min_value=8,  max_value=48, step=1,
     ),
     sp_key(): spacer(),
-    "empty_block_chance": mesa.visualization.Slider(
-        name="Empty block chance", value=Defaults.EMPTY_BLOCK_CHANCE,
-        min_value=0.0, max_value=1.0, step=0.05,
-    ),
-    sp_key(): spacer(),
 
     # ── Sub-block roads ───────────────────────────────────────────────────
     "_hdr_subblocks": h("Sub-block roads"),

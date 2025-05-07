@@ -57,6 +57,82 @@ class CellAgent(Agent):
                 return True
         return False
 
+    def _format_highway_label(self) -> str:
+        """
+        Build a name like "Horizontal_1_South_Entrance_2" or
+        "Vertical_3_East_Exit_1" for any HighwayEntrance/Exit cell.
+        """
+        model = self.get_city_model()
+        x, y = self.position
+        max_x, max_y = model.width - 1, model.height - 1
+
+        # 1) Cardinal edge
+        if y == 0:
+            cardinal = "South"
+        elif y == max_y:
+            cardinal = "North"
+        elif x == 0:
+            cardinal = "West"
+        elif x == max_x:
+            cardinal = "East"
+        else:
+            cardinal = "Center"  # should never happen for highway cells
+
+        # 2) Orientation
+        orientation = "Horizontal" if cardinal in ("South", "North") else "Vertical"
+
+        # 3) GroupIdx: gather all highway IDs of this orientation
+        ents = model.get_highway_entrances()
+        exts = model.get_highway_exits()
+        # pick all IDs where the cell sits on the matching edge
+        hw_ids = set(
+            c.highway_id
+            for c in (ents + exts)
+            if ((orientation == "Horizontal") and c.position[1] in (0, max_y))
+            or ((orientation == "Vertical")   and c.position[0] in (0, max_x))
+        )
+        # For each ID, pick one representative cell to sort by
+        reps = []
+        for hid in hw_ids:
+            # prefer the entrance cell if it exists, else an exit
+            candidates = [c for c in ents if c.highway_id == hid] or [c for c in exts if c.highway_id == hid]
+            rep_pos = candidates[0].position
+            reps.append((hid, rep_pos))
+
+        # sort them into reading order
+        if orientation == "Horizontal":
+            reps.sort(key=lambda t: (t[1][1], t[1][0]))  # by y (south→north), then x
+        else:
+            reps.sort(key=lambda t: (t[1][0], t[1][1]))  # by x (west→east), then y
+
+        ordered_hids = [t[0] for t in reps]
+        group_idx = ordered_hids.index(self.highway_id) + 1
+
+        # 4) PairIdx: among entrances *or* exits on this same edge
+        if self.cell_type == "HighwayEntrance":
+            same_edge = [c for c in ents if c.position == c.position and c.position[0] == x and c.position[1] == y]
+            # actually you want *all* entrances on that same edge:
+            if orientation == "Horizontal":
+                coll = [c for c in ents if c.position[1] == y]
+                coll.sort(key=lambda c: c.position[0])
+            else:
+                coll = [c for c in ents if c.position[0] == x]
+                coll.sort(key=lambda c: c.position[1])
+        else:
+            # exits
+            if orientation == "Horizontal":
+                coll = [c for c in exts if c.position[1] == y]
+                coll.sort(key=lambda c: c.position[0])
+            else:
+                coll = [c for c in exts if c.position[0] == x]
+                coll.sort(key=lambda c: c.position[1])
+
+        pair_idx = coll.index(self) + 1
+
+        typ = "Entrance" if self.cell_type == "HighwayEntrance" else "Exit"
+        return f"{orientation}_{group_idx}_{cardinal}_{typ}_{pair_idx}"
+
+
     def step(self):
         pass
 
@@ -67,10 +143,8 @@ class CellAgent(Agent):
             return f"{self.id}"
         elif self.cell_type == "BlockEntrance":
             return f"BlockEntrance_{self.block_id}"
-        elif self.cell_type == "HighwayEntrance":
-            return f"HighwayEntrance_{self.highway_id}"
-        elif self.cell_type == "HighwayExit":
-            return f"HighwayExit_{self.highway_id}E"
+        elif self.cell_type in ("HighwayEntrance", "HighwayExit"):
+            return self._format_highway_label()
         elif self.cell_type == "TrafficLight":
             return f"TrafficLight_I{self.intersection_group.id}_#{self.intersection_group.traffic_lights.index(self)}"
         else:

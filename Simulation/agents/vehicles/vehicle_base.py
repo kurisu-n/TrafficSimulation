@@ -22,13 +22,14 @@ class VehicleAgent(Agent):
     # ════════════════════════════════════════════════════════════
     #  INIT / HELPERS
     # ════════════════════════════════════════════════════════════
-    def __init__(self, custom_id, model, start_cell: CellAgent, target_cell: CellAgent):
+    def __init__(self, custom_id, model, start_cell: CellAgent, target_cell: CellAgent, population_type = None):
         super().__init__(str_to_unique_int(custom_id), model)
         self.id = custom_id
         self.start_cell = start_cell
         self.target = target_cell
         self.previous_cell = None
         self.current_cell = None
+        self.population_type = population_type
 
         self.base_speed = 0      # «cruising» speed valid until a full stop
         self.current_speed = 0   # speed granted *this* tick
@@ -539,7 +540,7 @@ class VehicleAgent(Agent):
         return self.target.get_position()
 
     def get_description(self):
-        return f"A Base {self.get_vehicle_type_name()}"
+        return f"{self.population_type} Citizen"
 
     def get_portrayal(self):
 
@@ -555,9 +556,24 @@ class VehicleAgent(Agent):
             "Description": self.get_description(),
 
             "Direction": direction_arrow,
-            "Speed": self.current_speed,
-            "Overtaking": self.is_overtaking,
+            "Speed": self.current_speed
         }
+
+        flags = []
+        for flag, label in [
+            ("is_overtaking", "Overtaking"),
+            ("is_malfunctioning", "Malfunctioning"),
+            ("in_collision", "InCollision"),
+            ("is_parked", "Parked"),
+        ]:
+            if getattr(self, flag, False):
+                flags.append(label)
+        if flags and len(flags) > 0:
+            portrayal["Status"] = ", ".join(flags)
+        else:
+            portrayal["Status"] = "Ok"
+
+        portrayal["Current Destination"] = self.target.id if self.target else "None"
 
         flash_on = (self.city_model.step_count % 2) == 0
         if self.is_in_collision:
