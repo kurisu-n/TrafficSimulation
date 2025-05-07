@@ -33,12 +33,12 @@ class ManualVehicleControl(TextElement):
         start_opts = "\n".join(
             f'<option value=\"{s.id}\"' +
             (' selected' if s.id==model.user_selected_start else '') +
-            f'>{s.id}</option>' for s in starts
+            f'>{s.get_display_name()}</option>' for s in starts
         )
         target_opts = "\n".join(
             f'<option value=\"{t.id}\"' +
             (' selected' if t.id==model.user_selected_target else '') +
-            f'>{t.id}</option>' for t in targets
+            f'>{t.get_display_name()}</option>' for t in targets
         )
 
         # --- render HTML with client-side persistence ---

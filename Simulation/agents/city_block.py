@@ -8,7 +8,6 @@ from Simulation.agents.cell import CellAgent
 from Simulation.utilities import *
 
 
-
 class CityBlock(Agent):
     """A whole city block (Residential, Office, …) that tracks Food & Waste.
 
@@ -16,9 +15,9 @@ class CityBlock(Agent):
     ``self.gradual_resources`` (bool) decides **how** the block’s resources
     change:
 
-    * **True  → Gradual mode** – every tick a fractional amount is applied
-      (size / TICKS).  Remainders accumulate so no units are lost.
-    * **False → Burst  mode** – the legacy behaviour: one big update every
+    * **True → Gradual mode** – every tick a fractional amount is applied
+      (size/TICKS).  Remainders accumulate so no units are lost.
+    * **False → Burst mode** – the legacy behaviour: one big update every
       *N* ticks.
     """
 

@@ -1,11 +1,13 @@
 # cell.py
-from typing import cast
+from typing import cast, TYPE_CHECKING
 from mesa import Agent
 from Simulation.config import Defaults
 from collections import deque
 from Simulation.utilities import *
 
-
+if TYPE_CHECKING:
+    from Simulation.agents.city_block import CityBlock
+    from Simulation.city_model import CityModel
 
 class CellAgent(Agent):
     """
@@ -59,6 +61,20 @@ class CellAgent(Agent):
         pass
 
     # ———— utility/query methods ————
+
+    def get_display_name(self):
+        if self.cell_type == "Intersection":
+            return f"{self.id}"
+        elif self.cell_type == "BlockEntrance":
+            return f"BlockEntrance_{self.block_id}"
+        elif self.cell_type == "HighwayEntrance":
+            return f"HighwayEntrance_{self.highway_id}"
+        elif self.cell_type == "HighwayExit":
+            return f"HighwayExit_{self.highway_id}E"
+        elif self.cell_type == "TrafficLight":
+            return f"TrafficLight_I{self.intersection_group.id}_#{self.intersection_group.traffic_lights.index(self)}"
+        else:
+            return self.get_position()
 
     def get_city_model(self) -> "CityModel":
         from Simulation.city_model import CityModel
@@ -145,7 +161,8 @@ class CellAgent(Agent):
             for controlled_block in self.controlled_blocks:
                 controlled_block.status = "Stop"
 
-
+    def get_description(self):
+        return Defaults.DESCRIPTION_MAP.get(self.cell_type, "")
 
     def get_portrayal(self):
         # ① return cached copy when allowed
@@ -164,16 +181,19 @@ class CellAgent(Agent):
             "Color": self.base_color,
             "Layer": 0,
             "Type": self.cell_type,
-            "Description": Defaults.DESCRIPTION_MAP.get(self.cell_type, ""),
+            "Identifier": self.get_display_name(),
+            "Position": self.get_position(),
+            "Description": self.get_description(),
         }
 
         if self.cell_type in Defaults.ROADS:
-            portrayal["Assigned"] = self.light is not None
-            portrayal["Color"] = (
-                desaturate(self.base_color, sat_factor=0.75, light_factor=0.25)
-                if self.light is not None and self.light.status == "Stop"
-                else self.base_color
-            )
+            portrayal["Light"] = self.light is not None
+            if Defaults.CHANGE_ASSIGNED_CELL_COLOR_ON_STOP:
+                portrayal["Color"] = (
+                    desaturate(self.base_color, sat_factor=0.75, light_factor=0.25)
+                    if self.light is not None and self.light.status == "Stop"
+                    else self.base_color
+                )
 
         if self.cell_type=="ControlledRoad":
             portrayal["Color"] = (
@@ -191,7 +211,6 @@ class CellAgent(Agent):
             )
 
         if self.cell_type=="Intersection":
-            portrayal["Assigned"] = self.light is not None
             portrayal["Intersection Group"] = None if self.intersection_group is None else self.intersection_group.id
             portrayal["Color"] = (
                 desaturate(self.base_color, sat_factor=0.75, light_factor=0.25)
@@ -199,29 +218,25 @@ class CellAgent(Agent):
                 else self.base_color
             )
 
+        if self.cell_type == "BlockEntrance":
+            portrayal["Block ID"] = self.block_id
+
+            city = cast("CityModel", self.get_city_model())
+            city_block = cast("CityBlock", city.city_blocks.get(self.block_id))
+
+            if city_block is not None:
+                if city_block.needs_food():
+                    portrayal["Food"] = (
+                        f"{int(city_block.get_food_units())}/{int(city_block.max_food_units)}")
+                if city_block.produces_waste():
+                    portrayal["Waste"] = (
+                        f"{int(city_block.get_waste_units())}/{int(city_block.max_waste_units)}")
 
         if self.cell_type in Defaults.AVAILABLE_CITY_BLOCKS:
             portrayal["Block ID"] = self.block_id
-            city = self.get_city_model()
-            cb = getattr(city, "city_blocks", {}).get(self.block_id)
 
-            if cb is not None:
-                if cb.needs_food():
-                   portrayal["Food"] = (
-                                f"{int(cb.get_food_units())}/{int(cb.max_food_units)}")
-                if cb.produces_waste():
-                    portrayal["Waste"] = (
-                                f"{int(cb.get_waste_units())}/{int(cb.max_waste_units)}")
-
-
-        if self.cell_type == "BlockEntrance":
+        if self.cell_type == "Sidewalk" and self.block_id is not None:
             portrayal["Block ID"] = self.block_id
-            city = self.get_city_model()
-            cb = getattr(city, "city_blocks", {}).get(self.block_id)
-
-        if self.cell_type == "Sidewalk":
-            if self.block_id is not None:
-                portrayal["Block ID"] = self.block_id
 
         if direction_text:
             portrayal["Directions"] = direction_text

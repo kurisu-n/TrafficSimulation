@@ -40,7 +40,7 @@ class TrafficLightControl(TextElement):
         tl_opts = "\n".join(
             f'<option value="{tl.id}"'
             f'{" selected" if str(tl.id)==str(model.user_selected_traffic_light) else ""}>'
-            f'{tl.id}</option>'
+            f'{tl.get_display_name()}</option>'
             for tl in tls
         )
 

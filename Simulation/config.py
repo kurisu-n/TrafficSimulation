@@ -58,6 +58,29 @@ class Defaults:
 
     DIRECTION_ICONS = {"N": "↑", "S": "↓", "E": "→", "W": "←"}
 
+    ZONES = [
+        "Residential",
+        "Office",
+        "Market",
+        "Leisure",
+        "Other",
+        "Empty",
+        "Nothing",
+        "Sidewalk",
+        "Wall",
+        "R1",
+        "R2",
+        "R3",
+        "Intersection",
+        "HighwayEntrance",
+        "HighwayExit",
+        "TrafficLight",
+        "TrafficLightStop",
+        "ControlledRoad",
+        "ControlledRoadStop",
+        "BlockEntrance",
+    ]
+
     # Colors for each zone/road type
     ZONE_COLORS = {
         "Residential": "cadetblue",
@@ -66,20 +89,20 @@ class Defaults:
         "Leisure": "palevioletred",
         "Other": "darkkhaki",
         "Empty": "papayawhip",
+        "Nothing": "white",
+        "Sidewalk": "grey",
+        "Wall": "black",
         "R1": "dodgerblue",
         "R2": "saddlebrown",
         "R3": "darkgreen",
-        "Sidewalk": "grey",
         "Intersection": "yellow",
-        "BlockEntrance": "magenta",
         "HighwayEntrance": "royalblue",
         "HighwayExit": "blue",
         "TrafficLight": "lime",
         "TrafficLightStop": "red",
         "ControlledRoad": "thistle",
         "ControlledRoadStop": "salmon",
-        "Wall": "black",
-        "Nothing": "white"
+        "BlockEntrance": "magenta",
     }
 
     DESCRIPTION_MAP = {
@@ -89,20 +112,21 @@ class Defaults:
         "Leisure": "Leisure City Block",
         "Other": "Miscellaneous City Block",
         "Empty": "Empty City Block",
+        "Nothing": "Empty/unused space",
+        "Sidewalk": "Pedestrian Walkway",
+        "Wall": "Outer Wall",
         "R1": "Highway (4 Lanes, 2/Dir)",
         "R2": "Major Road (2 Lanes, 1/Dir)",
         "R3": "Local Road (1 Lane, One Dir)",
-        "R4": "Sub‑block Road (L‑shaped)",
-        "Sidewalk": "Pedestrian Walkway",
         "Intersection": "Road intersection",
-        "BlockEntrance": "City Block Entrance & Exit",
         "HighwayEntrance": "Highway Entrance",
         "HighwayExit": "Highway Exit",
-        "TrafficLight":"Intersection Traffic Light",
-        "ControlledRoad":"Road Controlled by Traffic Light",
-        "Wall": "Outer Wall",
-        "Nothing":"Empty/unused space",
+        "TrafficLight": "Intersection Traffic Light",
+        "ControlledRoad": "Road Controlled by Traffic Light",
+        "BlockEntrance": "City Block Entrance & Exit",
     }
+
+    # CITY RESOURCES
 
     FOOD_CAPACITY_PER_CELL = 2  # units per inner cell
     FOOD_CONSUMPTION_TICKS = 50  # ticks between consumption
@@ -114,29 +138,58 @@ class Defaults:
 
     GRADUAL_CITY_BLOCK_RESOURCES = True
 
+    # WEATHER
+
     RAIN_SPEED_REDUCTION = 2
 
-    USE_DUMMY_AGENTS: bool = False
-    CACHE_CELL_PORTRAYAL: bool = False
-    CACHED_TYPES = [AVAILABLE_CITY_BLOCKS, ROAD_LIKE_TYPES, "Wall","Nothing","Sidewalk"]
+    # VEHICLE SETTINGS
 
-    MIN_VEHICLE_SPEED: int = 1
-    MAX_VEHICLE_SPEED: int = 5
+    VEHICLE_MIN_SPEED: int = 1
+    VEHICLE_MAX_SPEED: int = 5
+
+    VEHICLE_RESPECT_AWARENESS: bool = False
     VEHICLE_AWARENESS_RANGE: int = 10
+    VEHICLE_AWARENESS_WIDTH: int = 3
+
+    VEHICLE_OBSTACLE_PENALTY_VEHICLE = 1_000
+    VEHICLE_OBSTACLE_PENALTY_STOP = 500
 
     VEHICLE_BASE_COLOR = "black"
     VEHICLE_PARKED_COLOR = "seagreen"
-    VEHICLE_COLLISION_COLOR = "red"
+
+    VEHICLE_CONTRAFLOW_OVERTAKE_ACTIVE = True
+    VEHICLE_CONTRAFLOW_PENALTY = 500
+    VEHICLE_MAX_CONTRAFLOW_OVERTAKE_STEPS: int = 6
+    VEHICLE_CONTRAFLOW_OVERTAKE_COLOR = "orange"
+
+    VEHICLE_MALFUNCTION_ACTIVE: bool = True
+    VEHICLE_MALFUNCTION_CHANCE: float = 1E-7
+    VEHICLE_MALFUNCTION_DURATION: int = 400
     VEHICLE_MALFUNCTION_COLOR = "yellow"
 
-    VEHICLE_MALFUNCTION_CHANCE: float = 0.05
-    VEHICLE_MALFUNCTION_DURATION: int = 10
+    VEHICLE_SIDESWIPE_COLLISION_ACTIVE: bool = False
+    VEHICLE_SIDESWIPE_COLLISION_CHANCE: float = 1E-3
+    VEHICLE_SIDESWIPE_COLLISION_DURATION: int = 600
 
-    VEHICLE_FRONT_COLLISION_CHANCE: float = 0.05
-    VEHICLE_SIDE_COLLISION_CHANCE: float = 0.05
-    VEHICLE_COLLISION_DURATION: int = 10
+    VEHICLE_COLLISION_COLOR = "red"
 
-    VEHICLE_OVERTAKE_OPPOSITE_LANE = True
+    # OPTIMIZATION AND DEBUGGING
+
+    USE_DUMMY_AGENTS: bool = True
+    CACHE_CELL_PORTRAYAL: bool = True
+
+    CACHED_TYPES = [z for z in ZONES if z not in [
+        "HighwayEntrance",
+        "HighwayExit",
+        "TrafficLight",
+        "TrafficLightStop",
+        "ControlledRoad",
+        "ControlledRoadStop",
+        "BlockEntrance"]]
+
+    CHANGE_ASSIGNED_CELL_COLOR_ON_STOP: bool = False
+
+
 
 
 
