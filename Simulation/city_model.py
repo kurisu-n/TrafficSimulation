@@ -1,9 +1,9 @@
 # city_model.py ─ refactored to share the central config
 from __future__ import annotations
-
+import numpy as np
 import random
-from typing import List
-from mesa import Model
+from typing import List, Any
+from mesa import Model, Agent
 from mesa.space import MultiGrid
 from mesa.time import RandomActivation
 
@@ -13,6 +13,7 @@ from Simulation.agents.cell import CellAgent
 from Simulation.agents.city_block import CityBlock
 from Simulation.agents.intersection_light_group import IntersectionLightGroup
 from Simulation.agents.dummy import DummyAgent
+from Simulation.agents.dynamic_traffic_generator import DynamicTrafficAgent
 
 class CityModel(Model):
     def __init__(self,
@@ -74,6 +75,9 @@ class CityModel(Model):
         self.grid = MultiGrid(self.width, self.height, torus=False)
         self.schedule = RandomActivation(self)
 
+        self.stop_cells: set[tuple[int, int]] = set()
+        self.vehicle_cells: set[tuple[int, int]] = set()
+
         # interior bounds
         self.interior_x_min = self.wall_thickness + self.sidewalk_ring_width
         self.interior_x_max = self.width  - (self.wall_thickness + self.sidewalk_ring_width) - 1
@@ -116,6 +120,15 @@ class CityModel(Model):
             self._add_dummy_agents()
 
         self._populate_cell_cache()
+
+        self.path_cache = {}
+        self.cell_lookup = {}
+
+        if Defaults.ENABLE_TRAFFIC:
+            self.dynamic_traffic_generator = DynamicTrafficAgent("DTA",self)
+            self.schedule.add(self.dynamic_traffic_generator)
+
+
 
     # -------------------------------------------------------------------
     #  intersection factory
@@ -1323,6 +1336,11 @@ class CityModel(Model):
         else:
             return
 
+        if tl.status == "Stop":
+            self.stop_cells.add(tl.get_position())
+        else:
+            self.stop_cells.discard(tl.get_position())
+
         controlled_road.light = tl
         tl.controlled_blocks.append(controlled_road)
 
@@ -1583,6 +1601,10 @@ class CityModel(Model):
                     return True
         return False
 
+    def _inside_interior(self, x, y):
+        return (self.interior_x_min <= x <= self.interior_x_max) and \
+               (self.interior_y_min <= y <= self.interior_y_max)
+
 
     def is_type(self, x, y, ctype):
         ags = self.get_cell_contents(x, y)
@@ -1590,14 +1612,6 @@ class CityModel(Model):
 
     def in_bounds(self, x, y):
         return (0 <= x < self.get_width()) and (0 <= y < self.get_height())
-
-    def _inside_interior(self, x, y):
-        return (self.interior_x_min <= x <= self.interior_x_max) and \
-               (self.interior_y_min <= y <= self.interior_y_max)
-
-    def _get_cached_cells(self, x, y) -> List[CellAgent]:
-        """Retrieve cached CellAgents at a specific position."""
-        return self.cell_agent_cache.get((x, y), [])
 
     def step(self):
         self.schedule.step()
@@ -1644,6 +1658,7 @@ class CityModel(Model):
         vehicle.current_cell.occupied = True
         self.remove_dummy(pos[0], pos[1])
         self.grid.place_agent(vehicle, vehicle.current_cell.get_position())
+        self.vehicle_cells.add(pos)
         self.schedule.add(vehicle)
 
     def remove_vehicle(self, vehicle: VehicleAgent):
@@ -1652,6 +1667,7 @@ class CityModel(Model):
         if vehicle.current_cell is not None:
             vehicle.current_cell.occupied = False
             v_pos = vehicle.current_cell.get_position()
+            self.vehicle_cells.discard(v_pos)
 
         self.grid.remove_agent(vehicle)
         self.schedule.remove(vehicle)
@@ -1664,21 +1680,27 @@ class CityModel(Model):
             self.remove_dummy(new_pos[0], new_pos[1])
 
         if vehicle.current_cell is not None:
+            self.vehicle_cells.discard(vehicle.current_cell.get_position())
             vehicle.current_cell.occupied = False
-            vehicle.current_cell = new_cell
 
+        vehicle.current_cell = new_cell
         new_cell.occupied = True
+
         self.grid.move_agent(vehicle, new_pos)
+        self.vehicle_cells.add(new_pos)
 
         if self.use_dummy_agents and old_pos is not None:
             self.place_dummy(old_pos[0], old_pos[1])
 
-
-    def get_cell_contents(self, x: int, y: int) -> List[CellAgent]:
-        if self.cell_agent_cache is not None:
-            return self._get_cached_cells(x, y)  # return directly
-        else:
-            return self.grid.get_cell_list_contents([(x, y)]) # type: ignore[return-value]
+    def get_cell_contents(self, x: int, y: int) -> List["CellAgent"]:
+        """
+        Return the live list of agents at (x, y).  Always a list –
+        never `None` – so callers can safely index `[0]`.
+        """
+        if 0 <= x < self.width and 0 <= y < self.height:
+            cell = self.grid[x][y]  # ← correct axis order
+            return cell if cell is not None else []
+        return []
 
     def get_width(self) -> int:
         return self.grid.width
@@ -1857,5 +1879,45 @@ class CityModel(Model):
         # not a recognised start block
         return []
 
+    # ═══════════════════════════════════════════════════════════════
+    #  NUMBA OPTIMIZATION HELPERS
+    # ═══════════════════════════════════════════════════════════════
 
+    def export_to_grid(self, *, dtype=np.int8) -> np.ndarray:
+        """
+        Fast grid export for A*:
+            0 = drivable cell
+            3 = impassable cell (building, sidewalk, wall, …)
+        The static 0/3 mask is cached once; the caller will paint
+        1 = vehicle   and   2 = stop/red-light   on top.
+        """
+        w, h = self.get_width(), self.get_height()
 
+        # ── 1. build & cache static mask on first call ──────────────────
+        if getattr(self, "_road_mask", None) is None:
+            road_mask = np.full((w, h), 3, dtype=dtype)  # default = blocked
+            road_like = Defaults.ROAD_LIKE_TYPES
+            for x in range(w):
+                for y in range(h):
+                    ags = self.get_cell_contents(x, y)
+                    if ags and ags[0].cell_type in road_like:
+                        road_mask[x, y] = 0  # drivable
+            self._road_mask = road_mask
+
+        # ── 2. cheap copy; caller mutates it ----------------------------
+        return self._road_mask.copy()
+
+    def occupied_vehicle_positions(self):
+        """
+        Yield ``(x, y)`` for every grid cell that is *currently occupied*
+        by a **VehicleAgent** which is *not* parked.
+        """
+        return self.vehicle_cells
+
+    def stop_cell_positions(self):
+        """
+        Yield ``(x, y)`` for every cell whose traffic-control *status*
+        is ``"Stop"`` …
+        """
+        for pos in self.stop_cells:
+            yield pos

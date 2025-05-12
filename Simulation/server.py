@@ -6,6 +6,7 @@ from mesa.visualization.ModularVisualization import ModularServer
 
 from Simulation.visualization.cell_inspector import CellInspectorJS, add_cell_inspector
 from Simulation.visualization.traffic_light_control import TrafficLightControl, add_traffic_light_routes
+from Simulation.visualization.traffic_statistics import TrafficStatistics
 from Simulation.visualization.vehicle_control import ManualVehicleControl, add_manual_vehicle_routes
 from Simulation.visualization.model_parameters import model_params
 from Simulation.city_model import CityModel
@@ -33,6 +34,7 @@ canvas = CanvasGrid(
 server = ModularServer(
     model_cls = CityModel,
     visualization_elements = [canvas,
+                              TrafficStatistics(),
                               TrafficLightControl(),
                               ManualVehicleControl()
                               ],

@@ -1,10 +1,10 @@
 # vehicle_base.py – refactored step logic & vehicle‑block speed reset
 from mesa import Agent
 import random
-import heapq
 from typing import TYPE_CHECKING, cast
 
-from numexpr.expressions import max_int32
+import numpy as np
+from numba.typed import List, Dict
 
 from Simulation.config import Defaults
 from Simulation.agents.cell import CellAgent
@@ -12,7 +12,6 @@ from Simulation.utilities import *
 
 if TYPE_CHECKING:
     from Simulation.city_model import CityModel
-
 
 class VehicleAgent(Agent):
     """
@@ -50,8 +49,8 @@ class VehicleAgent(Agent):
 
         self.city_model.place_vehicle(self,self.start_cell.get_position())
 
-        # initial path (ignoring Stop‑blocks so we can park *on* them if needed)
-        self.path: list[CellAgent] = self._compute_path(avoid_stops=True, avoid_vehicles=True)
+        self.path: list[CellAgent] = []  # ❶ always present
+        self.path = self._compute_path(avoid_stops=True, avoid_vehicles=True)
 
     # ------------------------------------------------------------
     #  Utilities
@@ -128,177 +127,63 @@ class VehicleAgent(Agent):
         return list(fov_positions)
 
 
-    # ------------------------------------------------------------
-    #  A* that first tries a *clean* path; if none exists, falls
-    #  back to “least‑obstructed” where obstacles just add cost.
-    # ------------------------------------------------------------
-    def _compute_path(
-        self,
-        *,
-        avoid_stops: bool = True,
-        avoid_vehicles: bool = True,
-        allow_contraflow_overtake: bool = False,
-    ) -> list["CellAgent"]:
+    # --------------------------------------------------------------------------- #
+    #  compute_path wrapper – *inside* VehicleAgent
+    # --------------------------------------------------------------------------- #
+    def _compute_path(self,
+                      *,
+                      avoid_stops: bool = True,
+                      avoid_vehicles: bool = True,
+                      allow_contraflow_overtake: bool = False) -> list["CellAgent"]:
         """
-        Plan a route to `self.target`.
-
-        Phase1 – strict:
-            • Vehicles inside FOV are impassable if `avoid_vehicles`.
-            • Stops inside FOV are impassable if `avoid_stops`.
-
-        Phase2 – penalty:
-            • If Phase1 fails, the exact same search is rerun but
-              obstacles are **passable** and add a large cost.
-            • The resulting path therefore minimises
-                  (# obstacles crossed, then length).
-
-        Returns an empty list only when even penalty mode cannot
-        reach the goal from the current cell.
+        Thin Python wrapper: gather data ➜ call Numba A* ➜ translate back.
         """
+        start_x, start_y = self.current_cell.get_position()
+        goal_x, goal_y = self.target.get_position()
 
-        def _astar(start=None, goal=None, soft_obstacles: bool = False, respect_fov: bool = False,
-                   ignore_flow: bool = False, maximum_steps: int = max_int32) -> list["CellAgent"]:
-            """Inner A*; soft_obstacles=True ⇒ obstacles add cost."""
-            city = cast("CityModel", self.model)
-            start = cast(tuple[int, int], self.current_cell.get_position()) if start is None else start
-            goal = cast(tuple[int, int], self.target.get_position()) if goal is None else goal
-            fov_positions = self._positions_in_fov() if avoid_vehicles else set()
+        # ➊ Build a tiny int grid:
+        #    0 = free, 1 = vehicle, 2 = stop (only if we’re supposed to avoid it)
+        grid = self.city_model.export_to_grid(dtype=np.int8)  # IMPLEMENT: export_to_grid
+        if avoid_vehicles:
+            for vx, vy in self.city_model.occupied_vehicle_positions():
+                grid[vx, vy] = 1
+        if avoid_stops:
+            for sx, sy in self.city_model.stop_cell_positions():
+                grid[sx, sy] = 2
 
-            def h(a: tuple[int, int]) -> int:
-                # Manhattan heuristic
-                return abs(a[0] - goal[0]) + abs(a[1] - goal[1])
+        # ➋ Call the jit-compiled core
+        path_xy = astar_numba(start_x, start_y,
+                               goal_x, goal_y,
+                               grid,
+                               float32(Defaults.VEHICLE_OBSTACLE_PENALTY_STOP),
+                               float32(Defaults.VEHICLE_OBSTACLE_PENALTY_VEHICLE),
+                               int32(Defaults.VEHICLE_MAX_CONTRAFLOW_OVERTAKE_STEPS
+                                     if allow_contraflow_overtake
+                                     else grid.size))
 
-            # open_set entry: (f, g, steps, pos, path)
-            open_set: list[tuple[int, int, int, tuple[int, int], list[tuple[int, int]]]] = []
-            # start with cost=0, steps=0
-            heapq.heappush(open_set, (h(start), 0, 0, start, []))
-            seen: dict[tuple[int, int], int] = {start: 0}
-
-            while open_set:
-                f, g, steps, pos, path = heapq.heappop(open_set)
-                if pos == goal:
-                    return self._path_from_positions(path + [pos])[1:]
-
-                x, y = pos
-                cell = city.get_cell_contents(x, y)[0]
-                directions = Defaults.AVAILABLE_DIRECTIONS
-
-                for d in directions:
-                    nx, ny = city.next_cell_in_direction(x, y, d)
-                    if not city.in_bounds(nx, ny):
-                        continue
-
-                    # pure step count
-                    current_steps = steps + 1
-                    if current_steps > maximum_steps:
-                        continue
-
-                    npos = (nx, ny)
-                    ncell = city.get_cell_contents(nx, ny)[0]
-
-                    # base cost: +1 for the move
-                    ng = g + 1
-
-                    contraflow_penalty = Defaults.VEHICLE_CONTRAFLOW_PENALTY
-                    vehicle_penalty = Defaults.VEHICLE_OBSTACLE_PENALTY_VEHICLE
-                    stop_penalty = Defaults.VEHICLE_OBSTACLE_PENALTY_STOP
-
-                    # ─ Obstacles inside FOV ──────────────────────
-                    is_in_fov = npos in fov_positions
-                    is_occupied = ncell.occupied
-                    is_stop = self._is_a_stop_cell(ncell)
-                    is_contraflow = d not in cell.directions
-
-                    if is_contraflow:
-                        if ignore_flow and ncell.cell_type in Defaults.ROADS:
-                            ng += contraflow_penalty
-                        else:
-                            continue
-
-                    if is_occupied and avoid_vehicles and (not respect_fov or is_in_fov):
-                        if soft_obstacles:
-                            ng += vehicle_penalty
-                        else:
-                            continue
-
-                    if is_stop and avoid_stops and (not respect_fov or is_in_fov):
-                        if soft_obstacles:
-                            ng += stop_penalty
-                        else:
-                            continue
-
-                    # record if this path is better cost-wise
-                    if npos not in seen or ng < seen[npos]:
-                        seen[npos] = ng
-                        heapq.heappush(
-                            open_set,
-                            (ng + h(npos),  # f = cost + heuristic
-                             ng,  # new cost
-                             current_steps,  # pure steps so far
-                             npos,
-                             path + [pos])
-                        )
-
-            return []  # goal unreachable in this mode
-
-        # ─────────  Phase 1: strict avoidance  ─────────
-        path = _astar(ignore_flow=False, soft_obstacles=False)
-        if path is None or len(path) == 0:
-            path = _astar(ignore_flow=False, soft_obstacles=True)
-
-        if allow_contraflow_overtake:
-            idx_stop, idx_vehicle = self._scan_ahead_for_obstacles(path=path)
-            if idx_vehicle == 0:
-                blocker = self._vehicle_on_cell(path[0])
-                if blocker and (blocker.is_stranded() or blocker.is_parked):
-                    # find first free cell past blocker
-                    bypass_position = None
-                    for cell in path:
-                        if not cell.occupied:
-                            bypass_position = cell.get_position()
-                            break
-                    if bypass_position is not None:
-                        # compute bypass path ignoring vehicles and flow
-                        bypass_path = _astar(
-                            ignore_flow=True,
-                            soft_obstacles=False,
-                            goal=bypass_position,
-                            maximum_steps=Defaults.VEHICLE_MAX_CONTRAFLOW_OVERTAKE_STEPS
-                        )
-                        # validate bypass_path
-                        if bypass_path and len(bypass_path) > 1:
-                            # ensure bypass_path starts at current and ends at bypass_position
-                            if bypass_path[-1].get_position() == bypass_position:
-                                # patch original path: replace segment up to bypass with bypass_path
-                                idx_bp = next(
-                                    i for i, c in enumerate(path)
-                                    if c.get_position() == bypass_position
-                                )
-                                patched = bypass_path + path[idx_bp+1:]
-                                self.overtake_path = bypass_path
-                                self.is_overtaking = True
-                                return patched
-
-        return path
-
+        # ➌ Translate back to CellAgent objects
+        return [self.city_model.get_cell_contents(x, y)[0] for (x, y) in path_xy]
 
     # ────────────────────────────────────────────────────────────────
 
-    def _scan_ahead_for_obstacles(self, path: list["CellAgent"] = None):
-        """Return indices of the first Stop‑cell or occupied cell on the path."""
-        if path is None:
-            path = self.path
+    def _scan_ahead_for_obstacles(self) -> tuple[int, int]:
+        rng = Defaults.VEHICLE_AWARENESS_RANGE
+        stop_cells: set[tuple[int, int]] = self.city_model.stop_cells
+        vehicle_cells: set[tuple[int, int]] = self.city_model.vehicle_cells
 
-        idx_stop = idx_vehicle = None
-        rng = min(Defaults.VEHICLE_AWARENESS_RANGE, len(path))
-        for idx in range(rng):
-            cell = path[idx]
-            if idx_stop is None and self._is_a_stop_cell(cell):
-                idx_stop = idx  # inclusive obstacle
-            if idx_vehicle is None and cell.occupied:
-                idx_vehicle = idx  # exclusive obstacle
-            if (idx_stop == 0) or (idx_vehicle == 0):
-                break
+        idx_stop: int | None = None
+        idx_vehicle: int | None = None
+
+        # iterate just the forward slice once
+        for idx, cell in enumerate(self.path[1: rng + 1], start=1):
+            pos = cell.position  # CellAgent already caches .position
+            if idx_stop is None and pos in stop_cells:
+                idx_stop = idx
+                # keep going – a vehicle closer than the stop still has priority
+            if pos in vehicle_cells:
+                idx_vehicle = idx
+                break  # cannot get past this one anyway
+
         return idx_stop, idx_vehicle
 
     def _recompute_path_on_obstacle(self):
@@ -468,7 +353,7 @@ class VehicleAgent(Agent):
         blocked_by_vehicle = False
 
         if idx_stop is not None:
-            max_steps = min(max_steps, idx_stop + 1)  # allowed to *enter* Stop cell
+            max_steps = min(max_steps, idx_stop)  # allowed to *enter* Stop cell
 
         if idx_vehicle is not None:
             if idx_vehicle == 0:

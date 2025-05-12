@@ -5,8 +5,8 @@ from enum import Enum, auto
 @dataclass(frozen=True)
 class Defaults:
     # grid
-    WIDTH:  int = 100
-    HEIGHT: int = 100
+    WIDTH:  int = 200
+    HEIGHT: int = 200
     # frame
     WALL_THICKNESS:       int   = 4
     SIDEWALK_RING_WIDTH:  int   = 2
@@ -60,8 +60,8 @@ class Defaults:
     DIRECTION_OPPOSITES = {"N": "S", "S": "N", "E": "W", "W": "E"}
     DIRECTION_TO_THE_RIGHT = {"N": "E", "E": "S", "S": "W", "W": "N"}
 
-    ROAD_LIKE_TYPES = {"R1", "R2", "R3", "Intersection", "HighwayEntrance"}
-    ROAD_LIKE_TYPES_WITHOUT_INTERSECTIONS = {"R1", "R2", "R3", "HighwayEntrance"}
+    ROAD_LIKE_TYPES = {"R1", "R2", "R3", "Intersection", "HighwayEntrance", "HighwayExit", "BlockEntrance"}
+    ROAD_LIKE_TYPES_WITHOUT_INTERSECTIONS = {"R1", "R2", "R3", "HighwayEntrance", "HighwayExit", "BlockEntrance"}
     REMOVABLE_DEAD_END_TYPES = {"R2", "R3", "Intersection"}
 
     DIRECTION_ICONS = {"N": "↑", "S": "↓", "E": "→", "W": "←"}
@@ -207,8 +207,8 @@ class Defaults:
     TIME_ZONES = [
         {  # Zone 1: 06:00–09:00
             "start_hour": 6, "end_hour": 9,
-            "through_prob": 0.15,
-            "internal": {
+            "through_distribution": 0.15,
+            "internal_distribution": {
                 ("Res", "Off"): 0.05,
                 ("Res", "Mar"): 0.05,
                 ("Res", "Lei"): 0.02,
@@ -217,8 +217,8 @@ class Defaults:
         },
         {  # Zone 2: 09:00–12:00
             "start_hour": 9, "end_hour": 12,
-            "through_prob": 0.20,
-            "internal": {
+            "through_distribution": 0.20,
+            "internal_distribution": {
                 ("Res", "Mar"): 0.10,
                 ("Res", "Oth"): 0.04,
                 ("Off", "Oth"): 0.06,
@@ -226,8 +226,8 @@ class Defaults:
         },
         {  # Zone 3: 12:00–15:00
             "start_hour": 12, "end_hour": 15,
-            "through_prob": 0.15,
-            "internal": {
+            "through_distribution": 0.15,
+            "internal_distribution": {
                 ("Res", "Mar"): 0.07,
                 ("Res", "Oth"): 0.03,
                 ("Off", "Oth"): 0.05,
@@ -235,8 +235,8 @@ class Defaults:
         },
         {  # Zone 4: 15:00–18:00
             "start_hour": 15, "end_hour": 18,
-            "through_prob": 0.15,
-            "internal": {
+            "through_distribution": 0.15,
+            "internal_distribution": {
                 ("Res", "Mar"): 0.03,
                 ("Off", "Oth"): 0.05,
                 ("Mar", "Oth"): 0.05,
@@ -245,8 +245,8 @@ class Defaults:
         },
         {  # Zone 5: 18:00–21:00
             "start_hour": 18, "end_hour": 21,
-            "through_prob": 0.12,
-            "internal": {
+            "through_distribution": 0.12,
+            "internal_distribution": {
                 ("Res", "Oth"): 0.02,
                 ("Res", "Lei"): 0.02,
                 ("Off", "Lei"): 0.02,
@@ -258,8 +258,8 @@ class Defaults:
         },
         {  # Zone 6: 21:00–24:00
             "start_hour": 21, "end_hour": 24,
-            "through_prob": 0.10,
-            "internal": {
+            "through_distribution": 0.10,
+            "internal_distribution": {
                 ("Off", "Res"): 0.03,
                 ("Mar", "Res"): 0.03,
                 ("Lei", "Res"): 0.02,
@@ -268,8 +268,8 @@ class Defaults:
         },
         {  # Zone 7: 00:00–03:00
             "start_hour": 0, "end_hour": 3,
-            "through_prob": 0.08,
-            "internal": {
+            "through_distribution": 0.08,
+            "internal_distribution": {
                 ("Off", "Res"): 0.02,
                 ("Lei", "Res"): 0.04,
                 ("Oth", "Res"): 0.01,
@@ -278,8 +278,8 @@ class Defaults:
         },
         {  # Zone 8: 03:00–06:00
             "start_hour": 3, "end_hour": 6,
-            "through_prob": 0.05,
-            "internal": {
+            "through_distribution": 0.05,
+            "internal_distribution": {
                 ("Res", "Mar"): 0.02,
                 ("Res", "Lei"): 0.02,
                 ("Res", "Oth"): 0.01,
@@ -291,15 +291,18 @@ class Defaults:
     SIMULATION_STARTING_TIME_OF_DAY_HOURS = 0
     SIMULATION_STARTING_TIME_OF_DAY_MINUTES = 0
 
-    INTERNAL_POPULATION = 100000
-    PASSING_POPULATION_PER_DAY = 24000
+    INTERNAL_POPULATION_TRAFFIC_PER_DAY = 100000
+    PASSING_POPULATION_TRAFFIC_PER_DAY = 24000
     TOTAL_SERVICE_VEHICLES_FOOD = 50
     TOTAL_SERVICE_VEHICLES_WASTE = 50
+    INDIVIDUAL_SERVICE_VEHICLE_COOLDOWN = 3600
 
     # OPTIMIZATION AND DEBUGGING
 
-    USE_DUMMY_AGENTS: bool = True
+    USE_DUMMY_AGENTS: bool = False
     CACHE_CELL_PORTRAYAL: bool = True
+    ENABLE_AGENT_PORTRAYAL: bool = True
+    ENABLE_TRAFFIC:bool = True
 
     CACHED_TYPES = [z for z in ZONES if z not in [
         "HighwayEntrance",
@@ -310,7 +313,7 @@ class Defaults:
         "ControlledRoadStop",
         "BlockEntrance"]]
 
-    CHANGE_ASSIGNED_CELL_COLOR_ON_STOP: bool = False
+    CHANGE_ASSIGNED_CELL_COLOR_ON_STOP: bool = True
 
 
 

@@ -42,6 +42,10 @@ class CellAgent(Agent):
         self.assigned_road_blocks = []
         self.controlled_blocks = []
 
+        self.get_city_model().cell_lookup[self.position] = self
+
+        self.has_been_displayed = False
+
         self._cached_portrayal: dict | None = None
 
     def _is_cacheable(self) -> bool:
@@ -226,17 +230,22 @@ class CellAgent(Agent):
     def set_light_go(self):
         if self.is_traffic_light():
             self.status = "Pass"
+            self.get_city_model().stop_cells.discard(self.position)
             for controlled_block in self.controlled_blocks:
                 controlled_block.status = "Pass"
 
     def set_light_stop(self):
         if self.is_traffic_light():
             self.status = "Stop"
+            self.get_city_model().stop_cells.add(self.position)
             for controlled_block in self.controlled_blocks:
                 controlled_block.status = "Stop"
 
     def get_description(self):
         return Defaults.DESCRIPTION_MAP.get(self.cell_type, "")
+
+    def should_portray(self):
+        return not Defaults.CACHE_CELL_PORTRAYAL or not self._is_cacheable() or not self.has_been_displayed
 
     def get_portrayal(self):
         # ① return cached copy when allowed
@@ -317,5 +326,6 @@ class CellAgent(Agent):
 
         if self.get_city_model().cache_cell_portrayal and self._is_cacheable():
             self._cached_portrayal = dict(portrayal)
+            self.has_been_displayed = True
 
         return portrayal

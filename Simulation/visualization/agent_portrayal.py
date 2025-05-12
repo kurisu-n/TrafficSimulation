@@ -4,6 +4,8 @@ from Simulation.agents.dummy import DummyAgent
 
 from typing import cast, TYPE_CHECKING
 
+from Simulation.config import Defaults
+
 if TYPE_CHECKING:
     from Simulation.city_model import CityModel
     from Simulation.agents.cell import CellAgent
@@ -21,6 +23,9 @@ def agent_portrayal(agent):
       - DummyAgent: mirror underlying CellAgent properties on Vehicle Layer,
         excluding a small set of keys
     """
+    if not Defaults.ENABLE_AGENT_PORTRAYAL:
+        return {}
+
     if isinstance(agent, DummyAgent):
         # fetch the cell underneath
         city_model = cast("CityModel", agent.model)
