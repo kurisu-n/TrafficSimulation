@@ -7,14 +7,15 @@ from mesa import Model, Agent
 from mesa.space import MultiGrid
 from mesa.time import RandomActivation
 
+from Simulation.agents.rain import RainManager
 from Simulation.agents.vehicles.vehicle_base import VehicleAgent
 from Simulation.config import Defaults
-from Simulation.agents.cell import CellAgent
-from Simulation.agents.city_block import CityBlock
-from Simulation.agents.intersection_light_group import IntersectionLightGroup
+from Simulation.agents.city_structure_entities.cell import CellAgent
+from Simulation.agents.city_structure_entities.city_block import CityBlock
+from Simulation.agents.city_structure_entities.intersection_light_group import IntersectionLightGroup
 from Simulation.agents.dummy import DummyAgent
 from Simulation.agents.dynamic_traffic_generator import DynamicTrafficAgent
-from Simulation.utilities.path_planner import PathPlanner
+from Simulation.utilities.pathfinding.path_planner import PathPlanner
 
 class CityModel(Model):
     def __init__(self,
@@ -131,7 +132,10 @@ class CityModel(Model):
 
         self._populate_cell_cache()
 
-
+        if Defaults.RAIN_ENABLED:
+            self.rains = []
+            rain_manager = RainManager("RainManager", self)
+            self.schedule.add(rain_manager)
 
         if Defaults.ENABLE_TRAFFIC:
             self.dynamic_traffic_generator = DynamicTrafficAgent("DTA",self)

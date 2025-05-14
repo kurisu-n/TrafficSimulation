@@ -4,8 +4,8 @@ from mesa import Agent
 from typing import Optional, TYPE_CHECKING, cast
 from Simulation.config import Defaults
 from Simulation.agents.vehicles.vehicle_base import VehicleAgent
-from Simulation.agents.city_block import CityBlock
-from Simulation.utilities.general import *  # for any utility (e.g. distance)
+from Simulation.agents.city_structure_entities.city_block import CityBlock
+from Simulation.utilities.general import *
 
 if TYPE_CHECKING:
     from Simulation.city_model import CityModel

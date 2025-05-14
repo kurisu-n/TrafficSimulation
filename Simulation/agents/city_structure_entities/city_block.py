@@ -4,7 +4,7 @@ from typing import List, Sequence, TYPE_CHECKING
 
 from mesa import Agent
 from Simulation.config import Defaults
-from Simulation.agents.cell import CellAgent
+from Simulation.agents.city_structure_entities.cell import CellAgent
 from Simulation.utilities.general import *
 
 
@@ -154,7 +154,7 @@ class CityBlock(Agent):
         Returns that road CellAgent, or None if none is available.
         """
         from Simulation.config import Defaults
-        from Simulation.agents.cell import CellAgent
+        from Simulation.agents.city_structure_entities.cell import CellAgent
 
         for ent in self._entrances:
             x0, y0 = ent.get_position()

@@ -6,7 +6,7 @@ from collections import deque
 from Simulation.utilities.general import *
 
 if TYPE_CHECKING:
-    from Simulation.agents.city_block import CityBlock
+    from Simulation.agents.city_structure_entities.city_block import CityBlock
     from Simulation.city_model import CityModel
 
 class CellAgent(Agent):
@@ -138,7 +138,7 @@ class CellAgent(Agent):
 
 
     def step(self):
-        pass
+        self.is_raining = False
 
     # ———— utility/query methods ————
 
@@ -267,6 +267,7 @@ class CellAgent(Agent):
             "Identifier": self.get_display_name(),
             "Position": self.get_position(),
             "Description": self.get_description(),
+            "Rain": self.is_raining,
         }
 
         if self.cell_type in Defaults.ROADS:
@@ -327,5 +328,8 @@ class CellAgent(Agent):
         if self.get_city_model().cache_cell_portrayal and self._is_cacheable():
             self._cached_portrayal = dict(portrayal)
             self.has_been_displayed = True
+
+        if self.is_raining:
+            portrayal["Color"] = desaturate(portrayal["Color"], sat_factor=0.95, light_factor=-0.05)
 
         return portrayal

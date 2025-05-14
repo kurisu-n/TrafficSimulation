@@ -1,4 +1,4 @@
-from Simulation.agents.cell import CellAgent
+from Simulation.agents.city_structure_entities.cell import CellAgent
 from Simulation.agents.vehicles.vehicle_base import VehicleAgent
 from Simulation.agents.dummy import DummyAgent
 
@@ -8,7 +8,7 @@ from Simulation.config import Defaults
 
 if TYPE_CHECKING:
     from Simulation.city_model import CityModel
-    from Simulation.agents.cell import CellAgent
+    from Simulation.agents.city_structure_entities.cell import CellAgent
 
 # Properties from the CellAgent portrayal to exclude when showing DummyAgent
 EXCLUDE_PROPERTIES = {}
@@ -23,8 +23,6 @@ def agent_portrayal(agent):
       - DummyAgent: mirror underlying CellAgent properties on Vehicle Layer,
         excluding a small set of keys
     """
-    if not Defaults.ENABLE_AGENT_PORTRAYAL:
-        return {}
 
     if isinstance(agent, DummyAgent):
         # fetch the cell underneath

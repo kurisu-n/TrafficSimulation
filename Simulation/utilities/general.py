@@ -21,14 +21,36 @@ def rgb_to_hex(rgb):
         int(rgb[0] * 255), int(rgb[1] * 255), int(rgb[2] * 255)
     )
 
+
 def desaturate(color, sat_factor=0.5, light_factor=0.0):
+    """
+    Desaturate and adjust lightness of a color.
+
+    Args:
+        color: Matplotlib color name or hex string (e.g. "#aabbcc").
+        sat_factor: Multiplier for saturation (0 = gray, 1 = original).
+        light_factor: Additive lightness adjustment;
+                      negative values darken, positives lighten.
+
+    Returns:
+        Hex string of the transformed color.
+    """
+    # parse input color
     if isinstance(color, str) and color.startswith('#'):
         r, g, b = hex_to_rgb(color)
     else:
         r, g, b = mcolors.to_rgb(color)
+
+    # convert to HLS
     h, l, s = colorsys.rgb_to_hls(r, g, b)
+
+    # adjust saturation
     s *= sat_factor
-    l = min(1.0, l + light_factor)
+
+    # adjust lightness and clamp between 0 and 1
+    l = max(0.0, min(1.0, l + light_factor))
+
+    # convert back to RGB and hex
     r2, g2, b2 = colorsys.hls_to_rgb(h, l, s)
     return rgb_to_hex((r2, g2, b2))
 

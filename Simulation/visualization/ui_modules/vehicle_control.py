@@ -3,7 +3,7 @@
 from __future__ import annotations
 import tornado.escape
 from mesa.visualization.modules import TextElement
-from Simulation.visualization.traffic_light_control import _Base
+from Simulation.visualization.ui_modules.traffic_light_control import _Base
 
 # =============================================================
 #  ⚑  UI TEXT ELEMENT

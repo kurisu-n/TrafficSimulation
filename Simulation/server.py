@@ -7,14 +7,15 @@ from mesa_viz_tornado.ModularVisualization import VisualizationElement
 
 from Simulation.config import Defaults
 from Simulation.visualization.dynamic_grid_server import DynamicGridServer
-from Simulation.visualization.traffic_light_control import TrafficLightControl, add_traffic_light_routes
-from Simulation.visualization.traffic_statistics import TrafficStatistics
-from Simulation.visualization.vehicle_control import ManualVehicleControl, add_manual_vehicle_routes
+from Simulation.visualization.ui_modules.traffic_light_control import TrafficLightControl, add_traffic_light_routes
+from Simulation.visualization.ui_modules.traffic_statistics import TrafficStatistics
+from Simulation.visualization.ui_modules.vehicle_control import ManualVehicleControl, add_manual_vehicle_routes
+from Simulation.visualization.ui_modules.rain_control import RainControl, add_rain_routes
 from Simulation.visualization.model_parameters import model_params
 from Simulation.city_model import CityModel
 from Simulation.visualization.agent_portrayal import agent_portrayal
 
-def get_free_port(default=9000, max_tries=100):
+def get_free_port(default=8000, max_tries=100):
     for offset in range(max_tries):
         port = default + offset
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -33,11 +34,17 @@ canvas = CanvasGrid(
     canvas_height    = 1000,
     canvas_width     = 1000)
 
-visualization_elements: list[VisualizationElement] = [TrafficStatistics()]
+visualization_elements: list[VisualizationElement] = []
+
+
+if Defaults.ENABLE_TRAFFIC:
+    visualization_elements.append(TrafficStatistics())
+
 if Defaults.ENABLE_AGENT_PORTRAYAL:
     visualization_elements.extend([ canvas,
                                     TrafficLightControl(),
-                                    ManualVehicleControl()
+                                    ManualVehicleControl(),
+                                    RainControl()
                                   ])
 
 server = DynamicGridServer(
@@ -49,6 +56,7 @@ server = DynamicGridServer(
 
 add_traffic_light_routes(server)
 add_manual_vehicle_routes(server)
+add_rain_routes(server)
 
 print("  → Elements:", [type(el).__name__ for el in server.visualization_elements])
 print("  → Handlers:", [h[0] for h in server.handlers])

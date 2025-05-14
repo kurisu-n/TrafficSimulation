@@ -8,8 +8,8 @@ from numba import float32, int32
 from numba.typed import List, Dict
 
 from Simulation.config import Defaults
-from Simulation.agents.cell import CellAgent
-from Simulation.utilities.astar_jit import astar_numba
+from Simulation.agents.city_structure_entities.cell import CellAgent
+from Simulation.utilities.pathfinding.astar_jit import astar_numba
 from Simulation.utilities.general import *
 
 if TYPE_CHECKING:

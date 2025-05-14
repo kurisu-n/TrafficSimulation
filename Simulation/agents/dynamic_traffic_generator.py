@@ -11,7 +11,7 @@ from mesa import Agent
 from Simulation.config import Defaults
 from Simulation.agents.vehicles.vehicle_base import VehicleAgent
 from Simulation.agents.vehicles.vehicle_service import ServiceVehicleAgent
-from Simulation.agents.cell import CellAgent
+from Simulation.agents.city_structure_entities.cell import CellAgent
 
 if TYPE_CHECKING:  # avoid circular at runtime
     from Simulation.city_model import CityModel

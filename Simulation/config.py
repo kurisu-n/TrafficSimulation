@@ -148,7 +148,16 @@ class Defaults:
 
     # WEATHER
 
+    RAIN_ENABLED: bool = False
     RAIN_SPEED_REDUCTION = 2
+    RAIN_RADIUS_MIN = 50
+    RAIN_RADIUS_MAX = 100
+    RAIN_SPEED_MIN = 1
+    RAIN_SPEED_MAX = 10
+    RAIN_OCCURRENCES_MAX = 3
+    RAIN_COOLDOWN = 86400
+    RAIN_SPAWN_CHANCE = 0.0001
+    RAIN_SPAWN_OFFSET: int = 10
 
     # VEHICLE SETTINGS
 
@@ -309,9 +318,9 @@ class Defaults:
     # OPTIMIZATION AND DEBUGGING
 
     USE_DUMMY_AGENTS: bool = False
-    CACHE_CELL_PORTRAYAL: bool = True
-    ENABLE_AGENT_PORTRAYAL: bool = False
-    ENABLE_TRAFFIC:bool = True
+    CACHE_CELL_PORTRAYAL: bool = False
+    ENABLE_AGENT_PORTRAYAL: bool = True
+    ENABLE_TRAFFIC:bool = False
     USE_CUDA_PATHFINDING: bool = False
 
     CACHED_TYPES = [z for z in ZONES if z not in [
@@ -323,7 +332,7 @@ class Defaults:
         "ControlledRoadStop",
         "BlockEntrance"]]
 
-    CHANGE_ASSIGNED_CELL_COLOR_ON_STOP: bool = True
+    CHANGE_ASSIGNED_CELL_COLOR_ON_STOP: bool = False
 
 
 

@@ -2,7 +2,7 @@
 from collections import namedtuple
 import numpy as np
 from numba import cuda
-from Simulation.utilities.astar_cuda import batched_astar, MAX_PATH
+from Simulation.utilities.pathfinding.astar_cuda import batched_astar, MAX_PATH
 
 PathRequest = namedtuple("PathRequest",
                          "start goal flags callback")

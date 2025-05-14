@@ -4,7 +4,7 @@ from typing import cast, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from Simulation.city_model import CityModel
-    from Simulation.agents.cell import CellAgent
+    from Simulation.agents.city_structure_entities.cell import CellAgent
 
 class DummyAgent(Agent):
     """
