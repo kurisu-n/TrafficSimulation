@@ -1,21 +1,8 @@
 from __future__ import annotations
 
-"""Dynamic traffic & service‑vehicle scheduler **with convenient time helpers**.
-
-Changes in this revision
-========================
-*  **Helper properties** – quick access to:
-   • ``day``  – simulation day index (int)
-   • ``hour`` / ``minute`` / ``second``
-   • ``time_of_day_seconds`` – seconds since midnight
-   • ``elapsed_(seconds|minutes|hours|days)`` – wall‑clock since sim start
-   • ``now_dhms()`` – tuple ``(day, hour, min, sec)`` for compact use.
-*  **Population‑type tagging** – every *VehicleAgent* now gets a
-   ``population_type`` string ("through" or "internal") so statistics can
-   classify live agents.
-*  Slight tidy‑ups of docstrings and imports.
-"""
-
+import datetime
+import math
+import os
 import random
 from typing import TYPE_CHECKING, cast, Literal
 
@@ -51,6 +38,8 @@ class Trip:
         self.destination = destination  # None for service vehicles – they pick a target themselves
         self.depart_secs = depart_secs
         self.kind = kind
+
+
 
     # nice repr for debugging / logging
     def __repr__(self):
@@ -93,8 +82,34 @@ class DynamicTrafficAgent(Agent):
         self.current_day = 0        # 0‑based day index
         self.pending: list[Trip] = []
 
-        # first‑day generation
+        self.created_internal: int = 0
+        self.created_through: int = 0
+        self.created_service_food: int = 0
+        self.created_service_waste: int = 0
+
+        self.total_duration_internal = 0.0
+        self.count_completed_internal = 0
+        self.total_distance_internal = 0.0
+
+        self.total_duration_through = 0.0
+        self.count_completed_through = 0
+        self.total_distance_through = 0.0
+
+        self.daily_finished_internal = 0
+        self.daily_finished_through = 0
+        self.daily_difference_history: list[int] = []
+
+        self._setup_results_dir()
+
+        if Defaults.SAVE_TOTAL_RESULTS:
+            self._initialize_total_saving()
+
+        if Defaults.SAVE_INDIVIDUAL_RESULTS:
+            self._initialize_individual_saving()
+
         self._generate_day(0)
+
+
 
     # ════════════════════════════════════════════════════════════════
     #  Public step
@@ -103,13 +118,29 @@ class DynamicTrafficAgent(Agent):
         prev = self.elapsed
         self.elapsed += self.dt
 
+        self._maybe_save_totals()
+        self._maybe_save_individual()
+
         # —— day rollover ——
         total_secs = self.start_offset + self.elapsed
         new_day = int(total_secs // 86_400)
         if new_day > self.current_day:
+
+            spawned = self.created_internal + self.created_through
+            finished = self.daily_finished_internal + self.daily_finished_through
+            self.daily_difference_history.append(finished - spawned)
+
             for d in range(self.current_day + 1, new_day + 1):
                 self._generate_day(d)
             self.current_day = new_day
+
+            # reset all counters at the start of the new day
+            self.created_internal = 0
+            self.created_through = 0
+            self.created_service_food = 0
+            self.created_service_waste = 0
+            self.daily_finished_internal = 0
+            self.daily_finished_through = 0
 
         # —— spawn trips in (prev, elapsed] ——
         to_spawn = [t for t in self.pending if prev < t.depart_secs <= self.elapsed]
@@ -158,29 +189,169 @@ class DynamicTrafficAgent(Agent):
     def elapsed_days(self) -> int:
         return int(self.elapsed // 86_400)
 
+    @property
+    def avg_duration_internal(self) -> float:
+        return (self.total_duration_internal / self.count_completed_internal
+                if self.count_completed_internal else 0.0)
+
+    @property
+    def avg_duration_through(self) -> float:
+        return (self.total_duration_through / self.count_completed_through
+                if self.count_completed_through else 0.0)
+
+    @property
+    def avg_time_per_unit_internal(self) -> float:
+        return ((self.total_duration_internal / self.total_distance_internal)
+                if self.total_distance_internal else 0.0)
+
+    @property
+    def avg_time_per_unit_through(self) -> float:
+        return ((self.total_duration_through / self.total_distance_through)
+                if self.total_distance_through else 0.0)
+
+    @property
+    def avg_daily_difference(self) -> float:
+        if not self.daily_difference_history:
+            return 0.0
+        return sum(self.daily_difference_history) / len(self.daily_difference_history)
+
     # convenience tuple
     def now_dhms(self) -> tuple[int, int, int, int]:
         """Return ``(day, hour, minute, second)``."""
         return self.day, self.hour, self.minute, self.second
 
-    # ════════════════════════════════════════════════════════════════
-    #  Trip generation helpers
-    # ════════════════════════════════════════════════════════════════
+    # ────────── Traffic‐stats helper methods ──────────
+    def pending_trips_today(self, kind: str | None = None) -> list[Trip]:
+        """
+        All scheduled Trip objects for the current simulation day,
+        optionally filtered by kind ("internal", "through", "service_food", "service_waste").
+        """
+        # compute day's window in depart_secs
+        day_start = self.current_day * 86_400 - self.start_offset
+        day_end = (self.current_day + 1) * 86_400 - self.start_offset
+        trips = [
+            t for t in self.pending
+            if day_start <= t.depart_secs < day_end
+               and (kind is None or t.kind == kind)
+        ]
+        return trips
+
+    def daily_total(self, kind: str) -> int:
+        """Configured total for 'internal', 'through', or scheduled-today count for service types."""
+        if kind == "internal":
+            return self.P_int
+        if kind == "through":
+            return self.P_thr
+        # for service, total = already created + still pending
+        if kind in ("service_food", "service_waste"):
+            created = getattr(self, f"created_{kind}")
+            return created + len(self.pending_trips_today(kind))
+        raise ValueError(f"Unknown kind: {kind}")
+
+    def created_count(self, kind: str) -> int:
+        """Number of trips of this kind spawned so far today."""
+        if kind in ("internal", "through"):
+            return getattr(self, f"created_{kind}")
+        # service_food → created_service_food, service_waste → created_service_waste
+        return getattr(self, f"created_{kind}")
+
+    def remaining(self, kind: str) -> int:
+        """How many more trips of this kind can spawn today."""
+        return self.daily_total(kind) - self.created_count(kind)
+
+    def percentage_created(self, kind: str) -> float:
+        """What percent of the daily_total has been created so far."""
+        total = self.daily_total(kind)
+        return (self.created_count(kind) / total * 100) if total else 0.0
+
+    def next_service_eta(self, kind: str) -> float | None:
+        """
+        Seconds until the next pending service trip of this kind
+        (or None if none remain today).
+        """
+        future = [
+            t.depart_secs - self.elapsed
+            for t in self.pending_trips_today(kind)
+            if t.depart_secs > self.elapsed
+        ]
+        return min(future) if future else None
+
+    def live_count(self, kind: str) -> int:
+        """
+        Current active vehicles:
+         - for "internal"/"through", counts VehicleAgent.population_type
+         - for service types, counts ServiceVehicleAgent.service_type
+        """
+        agents = self.model.schedule.agents
+        if kind in ("internal", "through"):
+            from Simulation.agents.vehicles.vehicle_base import VehicleAgent
+            return sum(
+                1
+                for ag in agents
+                if isinstance(ag, VehicleAgent) and ag.population_type == kind
+            )
+        from Simulation.agents.vehicles.vehicle_service import ServiceVehicleAgent
+        svc = "Food" if kind == "service_food" else "Waste"
+        return sum(
+            1
+            for ag in agents
+            if isinstance(ag, ServiceVehicleAgent) and ag.service_type == svc
+        )
+
+
+    def record_internal_trip(self, duration: float, distance: float):
+        self.total_duration_internal += duration
+        self.total_distance_internal += distance
+        self.count_completed_internal += 1
+        self.daily_finished_internal += 1
+
+
+    def record_through_trip(self, duration: float, distance: float):
+        self.total_duration_through += duration
+        self.total_distance_through += distance
+        self.count_completed_through += 1
+        self.daily_finished_through += 1
+
+
     def _generate_day(self, day_idx: int):
         """Populate *pending* with all trips for *day_idx*."""
         city: CityModel = cast("CityModel", self.model)
-        entrances = city.get_highway_entrances()
-        exits = city.get_highway_exits()
+        entrances = city.get_highway_entrances()  # list of CellAgent
+        exits = city.get_highway_exits()  # list of CellAgent
 
-        for zone in Defaults.TIME_ZONES:
+        zones = Defaults.TIME_ZONES
+
+        # 0) Pre-compute per-zone quotas so they sum exactly to total SV counts
+        def compute_quotas(total: int, shares: list[float]) -> list[int]:
+            float_counts = [total * s for s in shares]
+            floors = [math.floor(x) for x in float_counts]
+            rem = total - sum(floors)
+            fracs = sorted(
+                enumerate(float_counts),
+                key=lambda iv: (iv[1] - math.floor(iv[1])),
+                reverse=True
+            )
+            for i in range(rem):
+                idx, _ = fracs[i]
+                floors[idx] += 1
+            return floors
+
+        shares = [z["through_distribution"] for z in zones]
+        food_total = len(self.sv_food_ids)
+        waste_total = len(self.sv_waste_ids)
+        food_quotas = compute_quotas(food_total, shares)
+        waste_quotas = compute_quotas(waste_total, shares)
+
+        # 1) Loop zones and spawn traffic
+        for idx, zone in enumerate(zones):
             z0 = day_idx * 86_400 + zone["start_hour"] * 3_600 - self.start_offset
             z1 = day_idx * 86_400 + zone["end_hour"] * 3_600 - self.start_offset
             span = z1 - z0
 
-            # — 1) INTERNAL —
+            # — Internal traffic (unchanged) —
             for (abbr_o, abbr_d), frac in zone["internal_distribution"].items():
-                count = round(self.P_int * frac)
-                if count == 0:
+                cnt = round(self.P_int * frac)
+                if cnt == 0:
                     continue
                 o_type = Defaults.ABBR[abbr_o]
                 d_type = Defaults.ABBR[abbr_d]
@@ -188,59 +359,176 @@ class DynamicTrafficAgent(Agent):
                 dests = city.get_city_blocks_by_type(d_type)
                 if not origins or not dests:
                     continue
-                for _ in range(count):
+                for _ in range(cnt):
                     t = z0 + random.random() * span
                     oblk = random.choice(origins)
                     dblk = random.choice(dests)
-                    o_cell = random.choice(oblk.get_entrances())  # type: ignore[attr-defined]
-                    d_cell = random.choice(dblk.get_entrances())  # type: ignore[attr-defined]
+                    o_cell = random.choice(oblk.get_entrances())
+                    d_cell = random.choice(dblk.get_entrances())
                     self.pending.append(Trip(o_cell, d_cell, t, "internal"))
 
-            # — 2) SERVICE VEHICLES (Food & Waste) —
-            sv_zone_share = zone["through_distribution"]
-            sv_food_quota = round(len(self.sv_food_ids) * sv_zone_share)
-            sv_waste_quota = round(len(self.sv_waste_ids) * sv_zone_share)
+            # — Service vehicles (uniform per zone) —
+            Nf = food_quotas[idx]
+            for j in range(1, Nf + 1):
+                t = z0 + j * span / (Nf + 1)
+                start_cell = random.choice(
+                    entrances)  # CellAgent directly :contentReference[oaicite:0]{index=0}:contentReference[oaicite:1]{index=1}
+                self.pending.append(Trip(start_cell, None, t, "service_food"))
 
-            def _schedule_sv(kind: Literal["service_food", "service_waste"]):
-                pool = self.sv_food_ids if kind == "service_food" else self.sv_waste_ids
-                for _ in range(10):  # up to 10 attempts to respect cooldown
-                    vid = random.choice(pool)
-                    t = z0 + random.random() * span
-                    if t >= self._sv_next_time[vid]:
-                        start = random.choice(entrances)
-                        self.pending.append(Trip(start, None, t, kind))
-                        self._sv_next_time[vid] = t + self.cooldown
-                        return True
-                return False
+            Nw = waste_quotas[idx]
+            for j in range(1, Nw + 1):
+                t = z0 + j * span / (Nw + 1)
+                start_cell = random.choice(
+                    entrances)  # CellAgent directly :contentReference[oaicite:2]{index=2}:contentReference[oaicite:3]{index=3}
+                self.pending.append(Trip(start_cell, None, t, "service_waste"))
 
-            for _ in range(sv_food_quota):
-                _schedule_sv("service_food")
-            for _ in range(sv_waste_quota):
-                _schedule_sv("service_waste")
-
-            # — 3) THROUGH —
-            base_thr = round(self.P_thr * zone["through_distribution"])
+            # — Through traffic —
+            thr = round(self.P_thr * zone["through_distribution"])
             if self.count_sv_as_through:
-                base_thr = max(0, base_thr - (sv_food_quota + sv_waste_quota))
-            for _ in range(base_thr):
+                thr = max(0, thr - (Nf + Nw))
+            for _ in range(thr):
                 t = z0 + random.random() * span
-                ent = random.choice(entrances)
-                ex = random.choice(exits)
-                self.pending.append(Trip(ent, ex, t, "through"))
+                ent_cell = random.choice(entrances)  # use CellAgent directly
+                ex_cell = random.choice(exits)  # use CellAgent directly
+                self.pending.append(Trip(ent_cell, ex_cell, t, "through"))
 
-    # ════════════════════════════════════════════════════════════════
-    #  Spawn helper
-    # ════════════════════════════════════════════════════════════════
     def _spawn(self, trip: Trip):
         city: CityModel = cast("CityModel", self.model)
 
+        # Internal & Through traffic
         if trip.kind in ("internal", "through"):
+            # increment before spawning
+            if trip.kind == "internal":
+                self.created_internal += 1
+            else:
+                self.created_through += 1
+
             vid = f"V_{int(trip.depart_secs):06d}_{random.randint(0, 9999):04d}"
-            VehicleAgent(vid, city, trip.origin, cast(CellAgent, trip.destination), population_type=trip.kind)
+            VehicleAgent(
+                vid,
+                city,
+                trip.origin,
+                cast(CellAgent, trip.destination),
+                population_type=trip.kind
+            )
             return
 
-        # —— service vehicles ——
-        pool = self.sv_food_ids if trip.kind == "service_food" else self.sv_waste_ids
+        # Service vehicles
+        if trip.kind == "service_food":
+            self.created_service_food += 1
+            pool = self.sv_food_ids
+            sv_type = "Food"
+        else:  # service_waste
+            self.created_service_waste += 1
+            pool = self.sv_waste_ids
+            sv_type = "Waste"
+
         vid = random.choice(pool)
-        sv_type = "Food" if trip.kind == "service_food" else "Waste"
         ServiceVehicleAgent(vid, city, trip.origin, sv_type)
+
+    def _setup_results_dir(self):
+        """Create ./Results/{run_ts}/ once if any saving is enabled."""
+        if not (Defaults.SAVE_TOTAL_RESULTS or Defaults.SAVE_INDIVIDUAL_RESULTS):
+            self.results_dir = None
+            return
+        base = os.path.join(os.getcwd(), "Results")
+        os.makedirs(base, exist_ok=True)
+        # 📌 Only call datetime.now() here, once per run
+        self.run_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.results_dir = os.path.join(base, self.run_ts)
+        os.makedirs(self.results_dir, exist_ok=True)
+
+    def _initialize_total_saving(self):
+        """Prepare the totals CSV and its schedule."""
+        self.save_totals = True
+        self.totals_path = os.path.join(
+            self.results_dir,
+            f"{self.run_ts}_total_statistics.csv"
+        )
+        # Write header
+        with open(self.totals_path, "w") as f:
+            f.write(
+                "avg_duration_internal,avg_duration_through,"
+                "avg_time_per_unit_internal,avg_time_per_unit_through,"
+                "avg_daily_difference\n"
+            )
+        # Schedule first write
+        unit = Defaults.RESULTS_TOTAL_INTERVAL_UNIT    # e.g. "hours"
+        val  = Defaults.RESULTS_TOTAL_INTERVAL_VALUE   # e.g. 1
+        secs_map = {"hours": 3600, "minutes": 60, "seconds": 1}
+        self._total_interval = secs_map[unit] * val
+        self._next_total_snapshot = self._total_interval
+
+    def _initialize_individual_saving(self):
+        """Set up the single snapshot‐CSV and its schedule."""
+        self.save_individual = True
+        # pull unit & value
+        unit = Defaults.RESULTS_INDIVIDUAL_INTERVAL_UNIT    # e.g. "hours"
+        val  = Defaults.RESULTS_INDIVIDUAL_INTERVAL_VALUE   # e.g. 2
+        secs_map = {"hours": 3600, "minutes": 60, "seconds": 1}
+
+        # how many seconds between snapshots
+        self._indiv_interval = secs_map[unit] * val
+        self._next_indiv_snapshot = self._indiv_interval
+
+        # path for the one‐and‐only snapshot file
+        self.snapshot_path = os.path.join(
+            self.results_dir,
+            f"{self.run_ts}_snapshot_statistics_{val}_{unit}.csv"
+        )
+        # write header: first column named after the unit
+        headers = [unit,
+                   "avg_duration_internal",
+                   "avg_duration_through",
+                   "avg_time_per_unit_internal",
+                   "avg_time_per_unit_through",
+                   "avg_daily_difference"]
+        with open(self.snapshot_path, "w") as f:
+            f.write(",".join(headers) + "\n")
+
+
+    def _maybe_save_totals(self):
+        """If due, overwrite the total‐statistics CSV."""
+        if not getattr(self, "save_totals", False):
+            return
+        if self.elapsed >= self._next_total_snapshot:
+            with open(self.totals_path, "w") as f:
+                f.write(
+                    "avg_duration_internal,avg_duration_through,"
+                    "avg_time_per_unit_internal,avg_time_per_unit_through,"
+                    "avg_daily_difference\n"
+                )
+                f.write(
+                    f"{self.avg_duration_internal},"
+                    f"{self.avg_duration_through},"
+                    f"{self.avg_time_per_unit_internal},"
+                    f"{self.avg_time_per_unit_through},"
+                    f"{self.avg_daily_difference}\n"
+                )
+            self._next_total_snapshot += self._total_interval
+
+    def _maybe_save_individual(self):
+        """If due, append a new snapshot‐row to the same CSV."""
+        if not getattr(self, "save_individual", False):
+            return
+        if self.elapsed >= self._next_indiv_snapshot:
+            # compute unit‐value index (e.g. 2, 4, 6 for a 2-hour interval)
+            # unit_secs is self._indiv_interval divided by interval value
+            # so index = next_snapshot_time / unit_secs
+            unit = Defaults.RESULTS_INDIVIDUAL_INTERVAL_UNIT
+            secs_per_unit = {"hours":3600, "minutes":60, "seconds":1}[unit]
+            idx = int(self._next_indiv_snapshot / secs_per_unit)
+
+            # append row
+            row = [
+                str(idx),
+                f"{self.avg_duration_internal}",
+                f"{self.avg_duration_through}",
+                f"{self.avg_time_per_unit_internal}",
+                f"{self.avg_time_per_unit_through}",
+                f"{self.avg_daily_difference}"
+            ]
+            with open(self.snapshot_path, "a") as f:
+                f.write(",".join(row) + "\n")
+
+            self._next_indiv_snapshot += self._indiv_interval

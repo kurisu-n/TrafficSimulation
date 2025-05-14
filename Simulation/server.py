@@ -3,8 +3,10 @@
 import socket
 from mesa.visualization.modules import CanvasGrid
 from mesa.visualization.ModularVisualization import ModularServer
+from mesa_viz_tornado.ModularVisualization import VisualizationElement
 
-from Simulation.visualization.cell_inspector import CellInspectorJS, add_cell_inspector
+from Simulation.config import Defaults
+from Simulation.visualization.dynamic_grid_server import DynamicGridServer
 from Simulation.visualization.traffic_light_control import TrafficLightControl, add_traffic_light_routes
 from Simulation.visualization.traffic_statistics import TrafficStatistics
 from Simulation.visualization.vehicle_control import ManualVehicleControl, add_manual_vehicle_routes
@@ -12,7 +14,7 @@ from Simulation.visualization.model_parameters import model_params
 from Simulation.city_model import CityModel
 from Simulation.visualization.agent_portrayal import agent_portrayal
 
-def get_free_port(default=8000, max_tries=100):
+def get_free_port(default=9000, max_tries=100):
     for offset in range(max_tries):
         port = default + offset
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -31,13 +33,16 @@ canvas = CanvasGrid(
     canvas_height    = 1000,
     canvas_width     = 1000)
 
-server = ModularServer(
+visualization_elements: list[VisualizationElement] = [TrafficStatistics()]
+if Defaults.ENABLE_AGENT_PORTRAYAL:
+    visualization_elements.extend([ canvas,
+                                    TrafficLightControl(),
+                                    ManualVehicleControl()
+                                  ])
+
+server = DynamicGridServer(
     model_cls = CityModel,
-    visualization_elements = [canvas,
-                              TrafficStatistics(),
-                              TrafficLightControl(),
-                              ManualVehicleControl()
-                              ],
+    visualization_elements = visualization_elements,
     name = "Structured Urban Grid World",
     model_params = model_params,
 )

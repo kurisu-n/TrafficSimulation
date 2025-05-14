@@ -5,7 +5,7 @@ from typing import List, Sequence, TYPE_CHECKING
 from mesa import Agent
 from Simulation.config import Defaults
 from Simulation.agents.cell import CellAgent
-from Simulation.utilities import *
+from Simulation.utilities.general import *
 
 
 class CityBlock(Agent):

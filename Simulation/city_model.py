@@ -14,6 +14,7 @@ from Simulation.agents.city_block import CityBlock
 from Simulation.agents.intersection_light_group import IntersectionLightGroup
 from Simulation.agents.dummy import DummyAgent
 from Simulation.agents.dynamic_traffic_generator import DynamicTrafficAgent
+from Simulation.utilities.path_planner import PathPlanner
 
 class CityModel(Model):
     def __init__(self,
@@ -96,6 +97,15 @@ class CityModel(Model):
         self.intersection_light_groups = []
 
         self.cell_agent_cache = {}
+        self.path_cache = {}
+        self.tick_cache = {}
+        self.tick_grid = None
+        self.cell_lookup = {}
+
+        self.occ: np.ndarray = np.zeros((self.width, self.height), dtype=bool)
+
+        if Defaults.USE_CUDA_PATHFINDING:
+            self.path_planner = PathPlanner(self)
 
         # build sequence
         self._place_thick_wall()
@@ -121,8 +131,7 @@ class CityModel(Model):
 
         self._populate_cell_cache()
 
-        self.path_cache = {}
-        self.cell_lookup = {}
+
 
         if Defaults.ENABLE_TRAFFIC:
             self.dynamic_traffic_generator = DynamicTrafficAgent("DTA",self)
@@ -1614,7 +1623,11 @@ class CityModel(Model):
         return (0 <= x < self.get_width()) and (0 <= y < self.get_height())
 
     def step(self):
+        self.tick_cache.clear()
+        self.tick_grid = None
         self.schedule.step()
+        if Defaults.USE_CUDA_PATHFINDING:
+            self.path_planner.solve_all()     # ← GPU crunch
         self.step_count += 1
 
     # — Convenience getters —
@@ -1692,14 +1705,13 @@ class CityModel(Model):
         if self.use_dummy_agents and old_pos is not None:
             self.place_dummy(old_pos[0], old_pos[1])
 
-    def get_cell_contents(self, x: int, y: int) -> List["CellAgent"]:
+    def get_cell_contents(self, x: int, y: int) -> Agent | None | list[Agent | None] | list[Any]:
         """
-        Return the live list of agents at (x, y).  Always a list –
-        never `None` – so callers can safely index `[0]`.
+        Return the live list of agents at (x, y). Always a list,
+        so callers can safely do `[0]`.
         """
         if 0 <= x < self.width and 0 <= y < self.height:
-            cell = self.grid[x][y]  # ← correct axis order
-            return cell if cell is not None else []
+            return self.grid[x, y]  # tuple indexing → works
         return []
 
     def get_width(self) -> int:
@@ -1906,6 +1918,40 @@ class CityModel(Model):
 
         # ── 2. cheap copy; caller mutates it ----------------------------
         return self._road_mask.copy()
+
+    def export_to_grid_cuda(self, *, dtype=np.int8) -> np.ndarray:
+        """
+        Fast grid export for A*:
+            0 = drivable cell
+            3 = impassable cell (building, sidewalk, wall, …)
+        The static 0/3 mask is cached once; the caller will paint
+        1 = vehicle   and   2 = stop/red-light   on top.
+        """
+        w, h = self.get_width(), self.get_height()
+
+        # 1) build & cache static mask on first call ------------------------
+        if getattr(self, "_road_mask", None) is None:
+            road_mask = np.full((w, h), 255, dtype=dtype)  # default = wall
+            road_like = Defaults.ROAD_LIKE_TYPES
+            for x in range(w):
+                for y in range(h):
+                    ags = self.get_cell_contents(x, y)
+                    if ags and ags[0].cell_type in road_like:
+                        road_mask[x, y] = 0  # drivable
+                    elif ags and ags[0].cell_type == "Stop":
+                        road_mask[x, y] = 2  # static stop
+            self._road_mask = road_mask
+
+        # 2) cheap *copy* so caller can overlay vehicles / temp stops -------
+        grid = self._road_mask.copy()
+
+        # --- overlay dynamic obstacles (live vehicles) ---------------------
+        for vx, vy in self.occupied_vehicle_positions():
+            grid[vx, vy] = 1
+
+        # if you have a “current red lights” iterable, paint them as 2 here
+
+        return grid
 
     def occupied_vehicle_positions(self):
         """

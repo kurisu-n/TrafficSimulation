@@ -3,7 +3,7 @@ from typing import cast, TYPE_CHECKING
 from mesa import Agent
 from Simulation.config import Defaults
 from collections import deque
-from Simulation.utilities import *
+from Simulation.utilities.general import *
 
 if TYPE_CHECKING:
     from Simulation.agents.city_block import CityBlock

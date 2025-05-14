@@ -1,7 +1,7 @@
 from typing import Dict, List, Set, cast, TYPE_CHECKING
 from mesa import Agent
 from Simulation.config import Defaults
-from Simulation.utilities import *
+from Simulation.utilities.general import *
 
 if TYPE_CHECKING:
     from Simulation.city_model import CityModel

@@ -4,11 +4,13 @@ import random
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
+from numba import float32, int32
 from numba.typed import List, Dict
 
 from Simulation.config import Defaults
 from Simulation.agents.cell import CellAgent
-from Simulation.utilities import *
+from Simulation.utilities.astar_jit import astar_numba
+from Simulation.utilities.general import *
 
 if TYPE_CHECKING:
     from Simulation.city_model import CityModel
@@ -46,6 +48,10 @@ class VehicleAgent(Agent):
         self.base_color = Defaults.VEHICLE_BASE_COLOR
 
         self.city_model = cast("CityModel", self.model)
+
+
+        self.depart_time: float = getattr(self.city_model.dynamic_traffic_generator, "elapsed", 0.0)
+        self.steps_traveled: int = 0
 
         self.city_model.place_vehicle(self,self.start_cell.get_position())
 
@@ -130,7 +136,38 @@ class VehicleAgent(Agent):
     # --------------------------------------------------------------------------- #
     #  compute_path wrapper – *inside* VehicleAgent
     # --------------------------------------------------------------------------- #
-    def _compute_path(self,
+
+    def _compute_path(self,* args, **kwargs) -> list[CellAgent] | None:
+        """
+        Wrapper for the path planner. Calls the JIT-compiled A* algorithm.
+        """
+        if Defaults.USE_CUDA_PATHFINDING:
+            return self._compute_path_cuda(*args, **kwargs)
+        else:
+            return self._compute_path_jit(*args, **kwargs)
+
+    def _compute_path_cuda(self,
+                      *,
+                      avoid_stops: bool = True,
+                      avoid_vehicles: bool = True,
+                      allow_contraflow_overtake: bool = False) -> list[CellAgent] | None:
+        """
+        Thin Python wrapper: gather data ➜ call Numba A* ➜ translate back.
+        """
+        model = self.city_model
+        if avoid_vehicles:
+            model.path_planner.request(
+                self.current_cell.position,
+                self.target.position,
+                avoid_stops,
+                allow_contraflow_overtake,
+                lambda p: setattr(self, "path", p),
+            )
+            return self.path
+
+        return None
+
+    def _compute_path_jit(self,
                       *,
                       avoid_stops: bool = True,
                       avoid_vehicles: bool = True,
@@ -163,8 +200,6 @@ class VehicleAgent(Agent):
 
         # ➌ Translate back to CellAgent objects
         return [self.city_model.get_cell_contents(x, y)[0] for (x, y) in path_xy]
-
-    # ────────────────────────────────────────────────────────────────
 
     def _scan_ahead_for_obstacles(self) -> tuple[int, int]:
         rng = Defaults.VEHICLE_AWARENESS_RANGE
@@ -380,6 +415,8 @@ class VehicleAgent(Agent):
 
             new_pos = next_cell.get_position()
             self._move_to(next_cell, new_pos, old_pos)
+            self.steps_traveled += 1
+
             old_pos = new_pos
             self.path.pop(0)
 
@@ -389,6 +426,14 @@ class VehicleAgent(Agent):
         If *remove_on_arrival* is *True*, the vehicle is despawned; otherwise
         it simply stops in its target cell.
         """
+        gen = self.city_model.dynamic_traffic_generator
+        duration = gen.elapsed - self.depart_time
+        distance = self.steps_traveled
+
+        if self.population_type == "internal":
+            gen.record_internal_trip(duration, distance)
+        elif self.population_type == "through":
+            gen.record_through_trip(duration, distance)
         if self.remove_on_arrival:
             self._despawn()
         else:

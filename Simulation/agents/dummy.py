@@ -1,5 +1,5 @@
 from mesa import Agent
-from Simulation.utilities import *
+from Simulation.utilities.general import *
 from typing import cast, TYPE_CHECKING
 
 if TYPE_CHECKING:

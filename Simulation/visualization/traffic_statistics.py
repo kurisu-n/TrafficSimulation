@@ -1,137 +1,224 @@
 from __future__ import annotations
 
-"""Live traffic statistics card for the Mesa web UI – **wide (horizontal)** layout.
-
-Place in ``Simulation/visualization`` and append `TrafficStatistics()` to
-`server.modules` to render a responsive dashboard stretching the full
-width of the browser pane.
-"""
-
-from typing import TYPE_CHECKING, Dict, Tuple
-
+from typing import TYPE_CHECKING
 from mesa.visualization.modules import TextElement
-
 from Simulation.config import Defaults
 
-if TYPE_CHECKING:  # avoid heavy imports at runtime
+if TYPE_CHECKING:
     from Simulation.city_model import CityModel
-    from Simulation.agents.dynamic_traffic_generator import DynamicTrafficAgent
-    from Simulation.agents.vehicles.vehicle_base import VehicleAgent
-    from Simulation.agents.vehicles.vehicle_service import ServiceVehicleAgent
 
 
-# ──────────────────────────────────────────────────────────────────────
 class TrafficStatistics(TextElement):
-    """Responsive, horizontally‑spanning traffic dashboard."""
+    """Responsive, horizontally-spanning traffic dashboard."""
 
-    # ------------------------------------------------------------------
-    def render(self, model: "CityModel") -> str:  # noqa: ANN001
-        # —— locate DynamicTrafficAgent ——
-        dta = next((ag for ag in model.schedule.agents if ag.__class__.__name__ == "DynamicTrafficAgent"), None)
+    def render(self, model: CityModel) -> str:
+        # — find the traffic agent —
+        dta = next(
+            (ag for ag in model.schedule.agents
+             if ag.__class__.__name__ == "DynamicTrafficAgent"),
+            None
+        )
         if dta is None:
-            return (
-                '<div style="color:red;margin:4px;padding:4px;border:1px solid#900;">'
-                "DynamicTrafficAgent not found"
-                "</div>"
-            )
+            return '<div style="color:red">DynamicTrafficAgent not found</div>'
 
-        # —— time info ——
-        day, hour, minute, second = dta.now_dhms()  # type: ignore[attr-defined]
-        elapsed_d, elapsed_h, elapsed_m, elapsed_s = (
-            dta.elapsed_days,  # type: ignore[attr-defined]
-            dta.elapsed_hours % 24,  # type: ignore[attr-defined]
-            dta.elapsed_minutes % 60,  # type: ignore[attr-defined]
-            dta.elapsed_seconds % 60,  # type: ignore[attr-defined]
-        )
+        # —— current simulation time & elapsed in HH:MM:SS ——
+        day, hh, mm, ss = dta.now_dhms()
+        total_secs = dta.elapsed_seconds
+        tot_h = int(total_secs // 3600)
+        tot_m = int((total_secs % 3600) // 60)
+        tot_s_mod = int(total_secs % 60)
+        elapsed_s = f"{tot_h:02d}:{tot_m:02d}:{tot_s_mod:02d}"
 
-        # —— live vehicle counts ——
-        from Simulation.agents.vehicles.vehicle_base import VehicleAgent  # local import to avoid circulars
-        from Simulation.agents.vehicles.vehicle_service import ServiceVehicleAgent
+        # —— THROUGH traffic ——
+        total_thr     = dta.daily_total("through")
+        created_thr   = dta.created_count("through")
+        pct_thr       = dta.percentage_created("through")
+        rem_thr       = dta.remaining("through")
+        live_thr      = dta.live_count("through")
+        completed_thr = dta.count_completed_through
 
-        sched_agents = model.schedule.agents
-        through_live = sum(
-            1
-            for ag in sched_agents
-            if isinstance(ag, VehicleAgent) and getattr(ag, "population_type", None) == "through"
-        )
-        internal_live = sum(
-            1
-            for ag in sched_agents
-            if isinstance(ag, VehicleAgent) and getattr(ag, "population_type", None) == "internal"
-        )
-        food_sv = sum(
-            1 for ag in sched_agents if isinstance(ag, ServiceVehicleAgent) and ag.service_type == "Food"
-        )
-        waste_sv = sum(
-            1 for ag in sched_agents if isinstance(ag, ServiceVehicleAgent) and ag.service_type == "Waste"
-        )
+        # —— INSIDE traffic ——
+        total_int     = dta.daily_total("internal")
+        created_int   = dta.created_count("internal")
+        pct_int       = dta.percentage_created("internal")
+        rem_int       = dta.remaining("internal")
+        live_int      = dta.live_count("internal")
+        completed_int = dta.count_completed_internal
 
-        # —— percentages versus TOTAL populations (configured daily totals) ——
-        pct_through_total = (
-            through_live / Defaults.PASSING_POPULATION_TRAFFIC_PER_DAY * 100
-            if Defaults.PASSING_POPULATION_TRAFFIC_PER_DAY else 0.0
-        )
-        pct_internal_total = (
-            internal_live / Defaults.INTERNAL_POPULATION_TRAFFIC_PER_DAY * 100
-            if Defaults.INTERNAL_POPULATION_TRAFFIC_PER_DAY else 0.0
-        )
+        # —— SERVICE: Food ——
+        total_food   = dta.daily_total("service_food")
+        created_food = dta.created_count("service_food")
+        rem_food     = dta.remaining("service_food")
+        live_food    = dta.live_count("service_food")
+        eta_food     = dta.next_service_eta("service_food")
 
-        # —— internal route breakdown ——
-        breakdown: Dict[Tuple[str, str], int] = {}
-        for ag in sched_agents:
-            if isinstance(ag, VehicleAgent) and getattr(ag, "population_type", None) == "internal":
-                o_bt = getattr(getattr(ag.start_cell, "block", None), "block_type", None)
-                d_bt = getattr(getattr(ag.target, "block", None), "block_type", None)
-                if o_bt and d_bt:
-                    breakdown[(o_bt, d_bt)] = breakdown.get((o_bt, d_bt), 0) + 1
+        # —— SERVICE: Waste ——
+        total_waste   = dta.daily_total("service_waste")
+        created_waste = dta.created_count("service_waste")
+        rem_waste     = dta.remaining("service_waste")
+        live_waste    = dta.live_count("service_waste")
+        eta_waste     = dta.next_service_eta("service_waste")
 
-        def _fmt_route(kv):
-            (ob, db), cnt = kv
-            pct = cnt / internal_live * 100 if internal_live else 0.0
-            return f"<li>{ob}→{db}: {cnt} ({pct:.1f}%)</li>"
+        # —— helper to format any seconds → “HH:MM:SS” or “MM:SS” ——
+        def fmt(secs):
+            if secs is None or secs < 0:
+                return "—"
+            h = int(secs // 3600)
+            m = int((secs % 3600) // 60)
+            s = int(secs % 60)
+            return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
-        routes_html = (
-            "".join(_fmt_route(kv) for kv in sorted(breakdown.items(), key=lambda kv: -kv[1]))
-            or "<li>None</li>"
-        )
+        eta_food_s  = fmt(eta_food)
+        eta_waste_s = fmt(eta_waste)
 
-        # —— pending trips ——
-        pending = len(getattr(dta, "pending", []))
+        # —— PERFORMANCE METRICS ——
+        avg_dur_thr_s        = fmt(dta.avg_duration_through)
+        avg_dur_int_s        = fmt(dta.avg_duration_internal)
+        avg_time_unit_thr_s  = fmt(dta.avg_time_per_unit_through)
+        avg_time_unit_int_s  = fmt(dta.avg_time_per_unit_internal)
+        avg_daily_diff       = dta.avg_daily_difference
 
-        # ------------------------------------------------------------------
-        #  HTML & CSS – grid layout spanning full width
-        # ------------------------------------------------------------------
+        # —— render HTML/CSS ——
         return f"""
-        <style>
-          #ts-card {{
-            font:14px/1.4 system-ui,sans-serif; background:#202020; color:#eee;
-            padding:10px 14px; margin:4px; border-radius:8px; width:100%;
-          }}
-          #ts-card h3 {{ margin:0 0 8px 0; font-size:17px; }}
+    <style>
+      #ts-card {{
+        background: #000;
+        color: #fff;
+        padding: 14px;
+        border-radius: 8px;
+        font-family: sans-serif;
+      }}
+      #ts-top-info {{
+        display: flex;
+        gap: 12px;
+        margin-bottom: 12px;
+        align-items: center;
+      }}
+      .time-block, .elapsed-block {{
+        background: #111;
+        padding: 8px 12px;
+        border: 1px solid #444;
+        border-radius: 6px;
+        color: #fff;
+        flex: initial;
+      }}
+      .time-block {{
+        font-size: 18px;
+        font-weight: bold;
+        display: flex;
+        flex-direction: row;
+        gap: 8px;
+      }}
+      .elapsed-block {{
+        font-size: 18px;
+        font-weight: bold;
+      }}
+      #stats-grid {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 8px;
+      }}
+      .stat-category {{
+        background: #111;
+        padding: 10px;
+        border: 1px solid #444;
+        border-radius: 6px;
+        word-break: break-word;
+        width: 100%;
+      }}
+      .stat-category h4 {{
+        margin: 0 0 6px;
+        font-size: 16px;
+      }}
+      .stat-subtitle {{
+        font-size: 14px;
+        margin-bottom: 6px;
+        color: #aaa;
+      }}
+      .stat-block {{
+        font-size: 14px;
+        margin: 4px 0;
+      }}
+      .service-grid {{
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-top: 6px;
+      }}
+    </style>
+    
+    <div id="ts-card">
+      <h3>Traffic Statistics</h3>
+      <div id="ts-top-info">
+        <div class="time-block">
+          <div>Day: {day}</div>
+          <div>Hour: {hh:02d}</div>
+          <div>Minute: {mm:02d}</div>
+          <div>Second: {ss:02d}</div>
+        </div>
+        <div class="elapsed-block">Elapsed: {elapsed_s}</div>
+      </div>
 
-          /* responsive grid for the small stats */
-          #stats-grid {{
-            display:grid;
-            grid-template-columns:repeat(auto-fill,minmax(140px,1fr));
-            column-gap:14px; row-gap:6px;
-          }}
-          .stat-label {{ color:#aaa; margin-right:4px; }}
-          .stat-block {{ white-space:nowrap; }}
+      <div id="stats-grid">
 
-          #routes {{ column-count:4; column-gap:12px; margin:6px 0 0 0; padding:0 0 0 16px; }}
-          #routes li {{ break-inside:avoid; }}
-        </style>
-        <div id=\"ts-card\">
-          <h3>Traffic Statistics</h3>
-          <div id=\"stats-grid\">
-            <div class=\"stat-block\"><span class=\"stat-label\">Sim Time</span>Day {day} {hour:02d}:{minute:02d}:{second:02d}</div>
-            <div class=\"stat-block\"><span class=\"stat-label\">Elapsed</span>{elapsed_d}d {elapsed_h:02d}:{elapsed_m:02d}:{elapsed_s:02d}</div>
-            <div class=\"stat-block\"><span class=\"stat-label\">Through</span>{through_live}/{Defaults.PASSING_POPULATION_TRAFFIC_PER_DAY} ({pct_through_total:.1f}%)</div>
-            <div class=\"stat-block\"><span class=\"stat-label\">Internal</span>{internal_live}/{Defaults.INTERNAL_POPULATION_TRAFFIC_PER_DAY} ({pct_internal_total:.1f}%)</div>
-            <div class=\"stat-block\"><span class=\"stat-label\">Pending&nbsp;Trips</span>{pending}</div>
-            <div class=\"stat-block\"><span class=\"stat-label\">Food&nbsp;SV</span>{food_sv}</div>
-            <div class=\"stat-block\"><span class=\"stat-label\">Waste&nbsp;SV</span>{waste_sv}</div>
+        <!-- THROUGH -->
+        <div class="stat-category">
+          <h4>Through Traffic</h4>
+          <div class="stat-subtitle">Daily Total: {total_thr}</div>
+          <div class="stat-block">Created: {created_thr} ({pct_thr:.1f}%)</div>
+          <div class="stat-block">Remaining: {rem_thr}</div>
+          <div class="stat-block">Completed: {completed_thr}</div>
+          <div class="stat-block">Live: {live_thr}</div>
+        </div>
+
+        <!-- INSIDE -->
+        <div class="stat-category">
+          <h4>Inside Traffic</h4>
+          <div class="stat-subtitle">Daily Total: {total_int}</div>
+          <div class="stat-block">Created: {created_int} ({pct_int:.1f}%)</div>
+          <div class="stat-block">Remaining: {rem_int}</div>
+          <div class="stat-block">Completed: {completed_int}</div>
+          <div class="stat-block">Live: {live_int}</div>
+
+        </div>
+
+        <!-- SERVICE VEHICLES -->
+        <div class="stat-category">
+          <h4>Service Vehicles</h4>
+          <div class="service-grid">
+            <div>
+              <div class="stat-subtitle">Food Total: {total_food}</div>
+              <div class="stat-block">Created: {created_food}</div>
+              <div class="stat-block">Remaining: {rem_food}</div>
+              <div class="stat-block">Active: {live_food}</div>
+              <div class="stat-block">ETA: {eta_food_s}</div>
+            </div>
+            <div>
+              <div class="stat-subtitle">Waste Total: {total_waste}</div>
+              <div class="stat-block">Created: {created_waste}</div>
+              <div class="stat-block">Remaining: {rem_waste}</div>
+              <div class="stat-block">Active: {live_waste}</div>
+              <div class="stat-block">ETA: {eta_waste_s}</div>
+            </div>
           </div>
-          <h4 style=\"margin:10px 0 4px 0;font-size:15px;\">Internal Routes</h4>
-          <ul id=\"routes\">{routes_html}</ul>
-        </div>"""
+        </div>
+      </div>
+        <!-- PERFORMANCE METRICS -->
+      <div id="stats-grid">
+          <div class="stat-category">
+            <h4>Through Statistics</h4>
+            <div class="stat-block">Avg Through Duration: {avg_dur_thr_s}</div>
+            <div class="stat-block">Avg Time/Unit Through: {avg_time_unit_thr_s}</div>
+          </div>
+          <div class="stat-category">
+          <h4>Inside Statistics</h4>
+            <div class="stat-block">Avg Inside Duration: {avg_dur_int_s}</div>
+            <div class="stat-block">Avg Time/Unit Inside: {avg_time_unit_int_s}</div>
+          </div> 
+          <div class="stat-category">
+          <h4>Daily Statistics</h4>
+            <div class="stat-block">Avg Daily Difference: {avg_daily_diff:.1f}</div>
+          </div> 
+      </div>
+    </div>
+        """
