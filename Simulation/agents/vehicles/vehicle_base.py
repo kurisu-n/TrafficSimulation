@@ -11,6 +11,7 @@ from Simulation.config import Defaults
 from Simulation.agents.city_structure_entities.cell import CellAgent
 from Simulation.utilities.pathfinding.astar_jit import astar_numba
 from Simulation.utilities.general import *
+from Simulation.utilities.pathfinding.astar_python import astar_python
 
 if TYPE_CHECKING:
     from Simulation.city_model import CityModel
@@ -38,6 +39,7 @@ class VehicleAgent(Agent):
 
         self.is_overtaking = False
         self.overtake_path: list[CellAgent] | None = None
+        self.overtaking_duration: int = -1
 
         self.is_parked = False
         self.is_in_collision = False
@@ -50,13 +52,17 @@ class VehicleAgent(Agent):
         self.city_model = cast("CityModel", self.model)
 
 
-        self.depart_time: float = getattr(self.city_model.dynamic_traffic_generator, "elapsed", 0.0)
+        if Defaults.ENABLE_TRAFFIC:
+            self.depart_time: float = getattr(self.city_model.dynamic_traffic_generator, "elapsed", 0.0)
+        else:
+            self.depart_time: float = 0.0
+
         self.steps_traveled: int = 0
 
         self.city_model.place_vehicle(self,self.start_cell.get_position())
 
         self.path: list[CellAgent] = []  # ❶ always present
-        self.path = self._compute_path(avoid_stops=True, avoid_vehicles=True)
+        self.path = self._compute_path()
 
     # ------------------------------------------------------------
     #  Utilities
@@ -137,14 +143,140 @@ class VehicleAgent(Agent):
     #  compute_path wrapper – *inside* VehicleAgent
     # --------------------------------------------------------------------------- #
 
-    def _compute_path(self,* args, **kwargs) -> list[CellAgent] | None:
+    def _compute_path(self,* args, **kwargs) -> list[CellAgent] | None | list[Agent | None]:
         """
         Wrapper for the path planner. Calls the JIT-compiled A* algorithm.
         """
-        if Defaults.USE_CUDA_PATHFINDING:
+
+        if Defaults.PATHFINDING_METHOD == "CUDA":
             return self._compute_path_cuda(*args, **kwargs)
+        elif Defaults.PATHFINDING_METHOD == "JIT":
+            return self._compute_path_jit()
         else:
-            return self._compute_path_jit(*args, **kwargs)
+            return self._compute_path_python()
+
+
+    def _compute_path_python(
+        self
+    ) -> list["CellAgent"]:
+
+        city = cast("CityModel", self.model)
+        default_start = cast(tuple[int, int], self.current_cell.get_position())
+        default_goal = cast(tuple[int, int], self.target.get_position())
+        fov_positions = self._positions_in_fov()
+
+        # ─────────  Phase 1: strict avoidance  ─────────
+        path = astar_python(city, default_start, default_goal, fov_positions,
+                            soft_obstacles= False, ignore_flow = False,)
+
+        # ─────────  Phase 2: allow soft obstacles if no path  ─────────
+        if path is None or len(path) == 0:
+            path = astar_python(city, default_start, default_goal, fov_positions,
+                            soft_obstacles=True, ignore_flow=False)
+
+        # ─────────  Phase 3: Contraflow‐overtake bypass (ignore flow)  ─────────
+        if Defaults.VEHICLE_CONTRAFLOW_OVERTAKE_ACTIVE:
+            idx_stop, idx_vehicle = self._scan_ahead_for_obstacles(path)
+            if idx_vehicle == 0:
+                blocker = self._vehicle_on_cell(path[0])
+                if blocker and (blocker.is_stranded() or blocker.is_parked):
+                    # find first free cell past blocker
+                    bypass_position = None
+                    for cell in path:
+                        if not cell.occupied:
+                            bypass_position = cell.get_position()
+                            break
+                    if bypass_position is not None:
+                        # compute bypass path ignoring vehicles and flow
+                        bypass_path = astar_python(
+                            city, default_start, bypass_position, fov_positions,
+                            soft_obstacles=False, ignore_flow=True,
+                            maximum_steps=Defaults.VEHICLE_MAX_CONTRAFLOW_OVERTAKE_STEPS
+                        )
+                        # validate bypass_path
+                        if (bypass_path and len(bypass_path) > 1 and bypass_path[-1].get_position() == bypass_position):
+                                # patch original path: replace segment up to bypass with bypass_path
+                                idx_bp = next(
+                                    i for i, c in enumerate(path)
+                                    if c.get_position() == bypass_position)
+
+                                patched = bypass_path + path[idx_bp+1:]
+                                self.overtake_path = bypass_path
+                                self.is_overtaking = True
+                                self.overtaking_duration = 0
+                                return patched
+
+        return path
+
+    def _compute_path_jit(self) -> list[CellAgent]:
+        """
+        JIT wrapper using cached flow_mask from CityModel:
+          1. Phase 1: strict avoidance (hard‐block vehicles & stops, respect flow)
+          2. Phase 2: allow soft obstacles (penalty) if Phase 1 fails
+          3. Optional contraflow‐overtake bypass: ignore flow, allow soft obstacles
+        """
+        # ── Data Prep ───────────────────────────────────────────────────────
+        sx, sy = self.current_cell.get_position()
+        gx, gy = self.target.get_position()
+
+        grid = self.city_model.export_to_grid(dtype=np.int8)
+        for vx, vy in self.city_model.occupied_vehicle_positions():
+            grid[vx, vy] = 1
+        for tx, ty in self.city_model.stop_cell_positions():
+            grid[tx, ty] = 2
+
+        flow_mask = self.city_model.get_flow_mask()
+
+        penalty_vehicle = float32(Defaults.VEHICLE_OBSTACLE_PENALTY_VEHICLE)
+        penalty_stop = float32(Defaults.VEHICLE_OBSTACLE_PENALTY_STOP)
+        penalty_contraflow = float32(Defaults.VEHICLE_CONTRAFLOW_PENALTY)
+        steps_contraflow = int32(Defaults.VEHICLE_MAX_CONTRAFLOW_OVERTAKE_STEPS)
+        steps_default = int32(grid.size)
+
+        # ─────────  Phase 1: strict avoidance  ─────────
+        raw_path = astar_numba(sx, sy, gx, gy, grid, flow_mask, penalty_stop, penalty_vehicle, penalty_contraflow,
+                           soft_obstacles= False, ignore_flow = True,
+                               maximum_steps = steps_default)
+
+        # ─────────  Phase 2: allow soft obstacles if no path  ─────────
+        if not raw_path:
+            raw_path = astar_numba(sx, sy, gx, gy, grid, flow_mask, penalty_stop, penalty_vehicle, penalty_contraflow,
+                           soft_obstacles= True, ignore_flow = False,
+                                   maximum_steps = steps_default)
+
+        path = [self.city_model.get_cell_contents(x, y)[0] for x, y in raw_path]
+
+        # ─────────  Phase 3: Contraflow‐overtake bypass (ignore flow)  ─────────
+        if Defaults.VEHICLE_CONTRAFLOW_OVERTAKE_ACTIVE:
+            idx_stop, idx_vehicle = self._scan_ahead_for_obstacles(path)
+            if idx_vehicle == 0:
+                blocker = self._vehicle_on_cell(path[0])
+                if blocker and (blocker.is_stranded() or blocker.is_parked):
+                    # find first free cell past blocker
+                    bypass_position = None
+                    for cell in path:
+                        if not cell.occupied:
+                            bypass_position = cell.get_position()
+                            break
+                    if bypass_position is not None:
+                        # compute bypass path ignoring vehicles and flow
+                        raw_path = astar_numba(sx, sy, bypass_position[0], bypass_position[1], grid, flow_mask, penalty_stop, penalty_vehicle, penalty_contraflow,
+                                               soft_obstacles = False, ignore_flow=False,
+                                               maximum_steps=steps_contraflow)
+                        bypass_path = [self.city_model.get_cell_contents(x, y)[0] for x, y in raw_path]
+                        # validate bypass_path
+                        if (bypass_path and len(bypass_path) > 1 and bypass_path[-1].get_position() == bypass_position):
+                            # patch original path: replace segment up to bypass with bypass_path
+                            i_bp = next(
+                                i for i, cell in enumerate(path)
+                                if cell.get_position() == bypass_position)
+
+                            patched = bypass_path + path[i_bp + 1:]
+                            self.overtake_path = bypass_path
+                            self.is_overtaking = True
+                            self.overtaking_duration = 0
+                            return patched
+        return path
 
     def _compute_path_cuda(self,
                       *,
@@ -167,59 +299,30 @@ class VehicleAgent(Agent):
 
         return None
 
-    def _compute_path_jit(self,
-                      *,
-                      avoid_stops: bool = True,
-                      avoid_vehicles: bool = True,
-                      allow_contraflow_overtake: bool = False) -> list["CellAgent"]:
-        """
-        Thin Python wrapper: gather data ➜ call Numba A* ➜ translate back.
-        """
-        start_x, start_y = self.current_cell.get_position()
-        goal_x, goal_y = self.target.get_position()
 
-        # ➊ Build a tiny int grid:
-        #    0 = free, 1 = vehicle, 2 = stop (only if we’re supposed to avoid it)
-        grid = self.city_model.export_to_grid(dtype=np.int8)  # IMPLEMENT: export_to_grid
-        if avoid_vehicles:
-            for vx, vy in self.city_model.occupied_vehicle_positions():
-                grid[vx, vy] = 1
-        if avoid_stops:
-            for sx, sy in self.city_model.stop_cell_positions():
-                grid[sx, sy] = 2
-
-        # ➋ Call the jit-compiled core
-        path_xy = astar_numba(start_x, start_y,
-                               goal_x, goal_y,
-                               grid,
-                               float32(Defaults.VEHICLE_OBSTACLE_PENALTY_STOP),
-                               float32(Defaults.VEHICLE_OBSTACLE_PENALTY_VEHICLE),
-                               int32(Defaults.VEHICLE_MAX_CONTRAFLOW_OVERTAKE_STEPS
-                                     if allow_contraflow_overtake
-                                     else grid.size))
-
-        # ➌ Translate back to CellAgent objects
-        return [self.city_model.get_cell_contents(x, y)[0] for (x, y) in path_xy]
-
-    def _scan_ahead_for_obstacles(self) -> tuple[int, int]:
-        rng = Defaults.VEHICLE_AWARENESS_RANGE
-        stop_cells: set[tuple[int, int]] = self.city_model.stop_cells
-        vehicle_cells: set[tuple[int, int]] = self.city_model.vehicle_cells
+    def _scan_ahead_for_obstacles(self, path: list["CellAgent"]) -> tuple[
+        None | int, None | int ]:
+        """Return indices of the first Stop‑cell or occupied cell on the path."""
+        rng = min(Defaults.VEHICLE_AWARENESS_RANGE, len(path))
 
         idx_stop: int | None = None
         idx_vehicle: int | None = None
 
-        # iterate just the forward slice once
-        for idx, cell in enumerate(self.path[1: rng + 1], start=1):
-            pos = cell.position  # CellAgent already caches .position
+        stop_cells: set[tuple[int, int]] = self.city_model.stop_cells
+        vehicle_cells: set[tuple[int, int]] = self.city_model.vehicle_cells
+
+        for idx in range(rng):
+            cell = path[idx]
+            pos = cell.position
             if idx_stop is None and pos in stop_cells:
-                idx_stop = idx
-                # keep going – a vehicle closer than the stop still has priority
-            if pos in vehicle_cells:
-                idx_vehicle = idx
-                break  # cannot get past this one anyway
+                idx_stop = idx  # inclusive obstacle
+            if idx_vehicle is None and pos in vehicle_cells:
+                idx_vehicle = idx  # exclusive obstacle
+            if (idx_stop == 0) or (idx_vehicle == 0):
+                break
 
         return idx_stop, idx_vehicle
+
 
     def _recompute_path_on_obstacle(self):
         """
@@ -230,30 +333,19 @@ class VehicleAgent(Agent):
             self.overtake_path = None
             self.is_overtaking = False
 
-        idx_stop, idx_vehicle = self._scan_ahead_for_obstacles()
+        idx_stop, idx_vehicle = self._scan_ahead_for_obstacles(self.path)
 
         if self.is_overtaking:
-            return idx_stop, idx_vehicle
+            self.overtaking_duration += 1
+            if (idx_stop is None) and (idx_vehicle is None) and self.overtaking_duration <= Defaults.VEHICLE_CONTRAFLOW_OVERTAKE_DURATION:
+                return idx_stop, idx_vehicle
 
         # —— First try the ordinary planner (same as before) ——
         if (idx_stop is not None) or (idx_vehicle is not None):
-            path = self._compute_path(avoid_stops=True, avoid_vehicles=True)
+            path = self._compute_path()
             if path:                     # success → adopt and leave
                 self.path = path
-                idx_stop, idx_vehicle = self._scan_ahead_for_obstacles()
-
-        # —— We’re boxed in… is it a stranded / parked car? ——
-        if idx_vehicle == 0 and Defaults.VEHICLE_CONTRAFLOW_OVERTAKE_ACTIVE: # obstacle is *next* cell
-            veh = self._vehicle_on_cell(self.path[0])
-            if veh and (veh.is_stranded() or veh.is_parked):
-                path = self._compute_path(
-                    avoid_stops=True,
-                    avoid_vehicles=True,
-                    allow_contraflow_overtake=True,
-                )
-                if path: # found a way round
-                    self.path = path
-                    idx_stop, idx_vehicle = self._scan_ahead_for_obstacles()
+                idx_stop, idx_vehicle = self._scan_ahead_for_obstacles(path)
 
         return idx_stop, idx_vehicle
 
@@ -364,7 +456,7 @@ class VehicleAgent(Agent):
         self._execute_movement(max_steps)
 
         if not self.path or len(self.path) == 0:
-            self.path = self._compute_path(avoid_vehicles=True, avoid_stops=True)
+            self.path = self._compute_path()
 
         if self.current_cell is self.target:
             self.on_target_reached()
@@ -426,14 +518,17 @@ class VehicleAgent(Agent):
         If *remove_on_arrival* is *True*, the vehicle is despawned; otherwise
         it simply stops in its target cell.
         """
-        gen = self.city_model.dynamic_traffic_generator
-        duration = gen.elapsed - self.depart_time
-        distance = self.steps_traveled
+        if Defaults.ENABLE_TRAFFIC:
+            gen = self.city_model.dynamic_traffic_generator
+            duration = gen.elapsed - self.depart_time
 
-        if self.population_type == "internal":
-            gen.record_internal_trip(duration, distance)
-        elif self.population_type == "through":
-            gen.record_through_trip(duration, distance)
+            distance = self.steps_traveled
+
+            if self.population_type == "internal":
+                gen.record_internal_trip(duration, distance)
+            elif self.population_type == "through":
+                gen.record_through_trip(duration, distance)
+
         if self.remove_on_arrival:
             self._despawn()
         else:

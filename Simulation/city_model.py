@@ -6,6 +6,7 @@ from typing import List, Any
 from mesa import Model, Agent
 from mesa.space import MultiGrid
 from mesa.time import RandomActivation
+from numba import njit
 
 from Simulation.agents.rain import RainManager
 from Simulation.agents.vehicles.vehicle_base import VehicleAgent
@@ -15,7 +16,9 @@ from Simulation.agents.city_structure_entities.city_block import CityBlock
 from Simulation.agents.city_structure_entities.intersection_light_group import IntersectionLightGroup
 from Simulation.agents.dummy import DummyAgent
 from Simulation.agents.dynamic_traffic_generator import DynamicTrafficAgent
-from Simulation.utilities.pathfinding.path_planner import PathPlanner
+from Simulation.utilities.general import overlay_dynamic
+from Simulation.utilities.pathfinding import astar_jit
+from Simulation.utilities.pathfinding.astar_cuda import PathPlanner
 
 class CityModel(Model):
     def __init__(self,
@@ -102,11 +105,9 @@ class CityModel(Model):
         self.tick_cache = {}
         self.tick_grid = None
         self.cell_lookup = {}
+        self._flow_mask = None
 
         self.occ: np.ndarray = np.zeros((self.width, self.height), dtype=bool)
-
-        if Defaults.USE_CUDA_PATHFINDING:
-            self.path_planner = PathPlanner(self)
 
         # build sequence
         self._place_thick_wall()
@@ -131,6 +132,9 @@ class CityModel(Model):
             self._add_dummy_agents()
 
         self._populate_cell_cache()
+
+        if Defaults.PATHFINDING_METHOD == "CUDA":
+            self.path_planner = PathPlanner(self)
 
         if Defaults.RAIN_ENABLED:
             self.rains = []
@@ -1630,7 +1634,7 @@ class CityModel(Model):
         self.tick_cache.clear()
         self.tick_grid = None
         self.schedule.step()
-        if Defaults.USE_CUDA_PATHFINDING:
+        if Defaults.PATHFINDING_METHOD == "CUDA":
             self.path_planner.solve_all()     # ← GPU crunch
         self.step_count += 1
 
@@ -1925,15 +1929,16 @@ class CityModel(Model):
 
     def export_to_grid_cuda(self, *, dtype=np.int8) -> np.ndarray:
         """
-        Fast grid export for A*:
+        Fast grid export for A* with CUDA support:
             0 = drivable cell
-            3 = impassable cell (building, sidewalk, wall, …)
-        The static 0/3 mask is cached once; the caller will paint
-        1 = vehicle   and   2 = stop/red-light   on top.
+            255 = impassable cell (building, …)
+            1 = live vehicle
+            2 = stop/red-light
+        The static mask is cached once; dynamic overlays are JIT-compiled.
         """
         w, h = self.get_width(), self.get_height()
 
-        # 1) build & cache static mask on first call ------------------------
+        # ── 1) Build & cache static mask on first call ───────────────────
         if getattr(self, "_road_mask", None) is None:
             road_mask = np.full((w, h), 255, dtype=dtype)  # default = wall
             road_like = Defaults.ROAD_LIKE_TYPES
@@ -1946,14 +1951,17 @@ class CityModel(Model):
                         road_mask[x, y] = 2  # static stop
             self._road_mask = road_mask
 
-        # 2) cheap *copy* so caller can overlay vehicles / temp stops -------
+        # ── 2) Create a mutable copy for this step ───────────────────────
         grid = self._road_mask.copy()
 
-        # --- overlay dynamic obstacles (live vehicles) ---------------------
-        for vx, vy in self.occupied_vehicle_positions():
-            grid[vx, vy] = 1
+        # ── 3) Gather dynamic positions (always 2-D) ─────────────────────
+        vlist = list(self.occupied_vehicle_positions())
+        vpos = np.array(vlist, dtype=np.int64).reshape(-1, 2)
+        slist = list(self.stop_cells)
+        spos = np.array(slist, dtype=np.int64).reshape(-1, 2)
 
-        # if you have a “current red lights” iterable, paint them as 2 here
+        # ── 4) Overlay via JIT-compiled function ─────────────────────────
+        grid = overlay_dynamic(grid, vpos, spos)
 
         return grid
 
@@ -1971,3 +1979,32 @@ class CityModel(Model):
         """
         for pos in self.stop_cells:
             yield pos
+
+    _DIR_TO_K: dict[str, int] = {}
+    for k, (dx, dy) in enumerate(astar_jit.NEIGHBOR_VECTORS):
+        for d, vec in astar_jit.DIRECTION_VECTORS.items():
+            if vec == (dx, dy):
+                _DIR_TO_K[d] = k
+
+    def get_flow_mask(self) -> np.ndarray:
+        """
+        Returns a boolean mask of shape (rows, cols, 4) where mask[x,y,k] is True
+        iff from cell (x,y) there is allowed flow/movement in the k-th neighbor
+        direction (using the same NEIGHBOR_VECTORS as the JIT A* expects).
+        """
+        grid = self.export_to_grid(dtype=np.int8)
+        rows, cols = grid.shape
+        mask = np.zeros((rows, cols, len(astar_jit.NEIGHBOR_VECTORS)), dtype=bool)
+
+        for x in range(rows):
+            for y in range(cols):
+                # get_cell_contents always returns a list, road cells first
+                cell = self.get_cell_contents(x, y)[0]
+                for d in cell.directions:
+                    # look up the exact k that matches this direction
+                    k = self._DIR_TO_K.get(d)
+                    if k is None:
+                        raise KeyError(f"Unknown direction '{d}' at cell ({x},{y})")
+                    mask[x, y, k] = True
+
+        return mask

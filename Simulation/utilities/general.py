@@ -6,6 +6,8 @@ import shutil
 import matplotlib.colors as mcolors
 
 import numpy as np
+from numba import njit
+
 
 def str_to_unique_int(s: str) -> int:
     """Convert a string to a unique integer using MD5."""
@@ -88,4 +90,30 @@ def cleanup_empty_results():
 
         if all_empty:
             shutil.rmtree(folder)
+
+
+@njit
+def overlay_dynamic(grid: np.ndarray,
+                    vehicle_positions: np.ndarray,
+                    stop_positions: np.ndarray) -> np.ndarray:
+    """
+    JIT-compiled overlay of vehicles (1) and stops (2) onto the grid.
+    Expects:
+      – grid: the static mask as a 2D array
+      – vehicle_positions: shape (n_vehicles, 2) array of (x,y)
+      – stop_positions:    shape (n_stops,    2) array of (x,y)
+    """
+    # overlay vehicles
+    for i in range(vehicle_positions.shape[0]):
+        x = vehicle_positions[i, 0]
+        y = vehicle_positions[i, 1]
+        grid[x, y] = 1
+
+    # overlay stops/red-lights
+    for j in range(stop_positions.shape[0]):
+        x = stop_positions[j, 0]
+        y = stop_positions[j, 1]
+        grid[x, y] = 2
+
+    return grid
 

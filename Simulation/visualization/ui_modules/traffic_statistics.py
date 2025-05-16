@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from mesa.visualization.modules import TextElement
 from Simulation.config import Defaults
+from Simulation.agents.vehicles.vehicle_base import VehicleAgent  # Added import to track vehicle statuses
 
 if TYPE_CHECKING:
     from Simulation.city_model import CityModel
@@ -30,34 +31,41 @@ class TrafficStatistics(TextElement):
         elapsed_s = f"{tot_h:02d}:{tot_m:02d}:{tot_s_mod:02d}"
 
         # —— THROUGH traffic ——
-        total_thr     = dta.daily_total("through")
-        created_thr   = dta.created_count("through")
-        pct_thr       = dta.percentage_created("through")
-        rem_thr       = dta.remaining("through")
-        live_thr      = dta.live_count("through")
+        total_thr = dta.daily_total("through")
+        created_thr = dta.created_count("through")
+        pct_thr = dta.percentage_created("through")
+        rem_thr = dta.remaining("through")
+        live_thr = dta.live_count("through")
         completed_thr = dta.count_completed_through
 
         # —— INSIDE traffic ——
-        total_int     = dta.daily_total("internal")
-        created_int   = dta.created_count("internal")
-        pct_int       = dta.percentage_created("internal")
-        rem_int       = dta.remaining("internal")
-        live_int      = dta.live_count("internal")
+        total_int = dta.daily_total("internal")
+        created_int = dta.created_count("internal")
+        pct_int = dta.percentage_created("internal")
+        rem_int = dta.remaining("internal")
+        live_int = dta.live_count("internal")
         completed_int = dta.count_completed_internal
 
         # —— SERVICE: Food ——
-        total_food   = dta.daily_total("service_food")
+        total_food = dta.daily_total("service_food")
         created_food = dta.created_count("service_food")
-        rem_food     = dta.remaining("service_food")
-        live_food    = dta.live_count("service_food")
-        eta_food     = dta.next_service_eta("service_food")
+        rem_food = dta.remaining("service_food")
+        live_food = dta.live_count("service_food")
+        eta_food = dta.next_service_eta("service_food")
 
         # —— SERVICE: Waste ——
-        total_waste   = dta.daily_total("service_waste")
+        total_waste = dta.daily_total("service_waste")
         created_waste = dta.created_count("service_waste")
-        rem_waste     = dta.remaining("service_waste")
-        live_waste    = dta.live_count("service_waste")
-        eta_waste     = dta.next_service_eta("service_waste")
+        rem_waste = dta.remaining("service_waste")
+        live_waste = dta.live_count("service_waste")
+        eta_waste = dta.next_service_eta("service_waste")
+
+        # —— VEHICLE STATUS COUNTS ——
+        vehicles = [ag for ag in model.schedule.agents if isinstance(ag, VehicleAgent)]
+        collisions = sum(1 for v in vehicles if v.is_in_collision)
+        malfunctions = sum(1 for v in vehicles if v.is_in_malfunction)
+        parked = sum(1 for v in vehicles if v.is_parked)
+        overtaking = sum(1 for v in vehicles if v.is_overtaking)
 
         # —— helper to format any seconds → “HH:MM:SS” or “MM:SS” ——
         def fmt(secs):
@@ -68,15 +76,15 @@ class TrafficStatistics(TextElement):
             s = int(secs % 60)
             return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
-        eta_food_s  = fmt(eta_food)
+        eta_food_s = fmt(eta_food)
         eta_waste_s = fmt(eta_waste)
 
         # —— PERFORMANCE METRICS ——
-        avg_dur_thr_s        = fmt(dta.avg_duration_through)
-        avg_dur_int_s        = fmt(dta.avg_duration_internal)
-        avg_time_unit_thr_s  = fmt(dta.avg_time_per_unit_through)
-        avg_time_unit_int_s  = fmt(dta.avg_time_per_unit_internal)
-        avg_daily_diff       = dta.avg_daily_difference
+        avg_dur_thr_s = fmt(dta.avg_duration_through)
+        avg_dur_int_s = fmt(dta.avg_duration_internal)
+        avg_time_unit_thr_s = fmt(dta.avg_time_per_unit_through)
+        avg_time_unit_int_s = fmt(dta.avg_time_per_unit_internal)
+        avg_daily_diff = dta.avg_daily_difference
 
         # —— render HTML/CSS ——
         return f"""
@@ -146,7 +154,7 @@ class TrafficStatistics(TextElement):
         margin-top: 6px;
       }}
     </style>
-    
+
     <div id="ts-card">
       <h3>Traffic Statistics</h3>
       <div id="ts-top-info">
@@ -179,7 +187,6 @@ class TrafficStatistics(TextElement):
           <div class="stat-block">Remaining: {rem_int}</div>
           <div class="stat-block">Completed: {completed_int}</div>
           <div class="stat-block">Live: {live_int}</div>
-
         </div>
 
         <!-- SERVICE VEHICLES -->
@@ -202,8 +209,17 @@ class TrafficStatistics(TextElement):
             </div>
           </div>
         </div>
+
+        <!-- VEHICLE STATUSES -->
+        <div class="stat-category">
+          <h4>Vehicle Statuses</h4>
+          <div class="stat-block">Collisions: {collisions}</div>
+          <div class="stat-block">Malfunctions: {malfunctions}</div>
+          <div class="stat-block">Parked: {parked}</div>
+          <div class="stat-block">Overtaking: {overtaking}</div>
+        </div>
       </div>
-        <!-- PERFORMANCE METRICS -->
+
       <div id="stats-grid">
           <div class="stat-category">
             <h4>Through Statistics</h4>

@@ -2,6 +2,11 @@
 from dataclasses import dataclass
 from enum import Enum, auto
 
+import numpy as np
+
+from Simulation.utilities.pathfinding import astar_jit
+
+
 @dataclass(frozen=True)
 class Defaults:
     # grid
@@ -56,7 +61,7 @@ class Defaults:
 
     AVAILABLE_DIRECTIONS = ["N", "S", "E", "W"]
 
-    DIRECTION_VECTORS = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
+    DIRECTION_VECTORS = {"N": (0, 1), "S": (0, -1), "W": (-1, 0), "E": (1, 0),}
     DIRECTION_OPPOSITES = {"N": "S", "S": "N", "E": "W", "W": "E"}
     DIRECTION_TO_THE_RIGHT = {"N": "E", "E": "S", "S": "W", "W": "N"}
 
@@ -134,74 +139,7 @@ class Defaults:
         "BlockEntrance": "City Block Entrance & Exit",
     }
 
-    # CITY RESOURCES
-
-    FOOD_CAPACITY_PER_CELL = 2  # units per inner cell
-    FOOD_CONSUMPTION_TICKS = 50  # ticks between consumption
-    WASTE_CAPACITY_PER_CELL = 1.5  # units per inner cell
-    WASTE_PRODUCTION_TICKS = 100  # ticks between production
-
-    CITY_BLOCK_THAT_NEED_FOOD = ["Market", "Leisure"]
-    CITY_BLOCK_THAT_PRODUCE_WASTE = AVAILABLE_CITY_BLOCKS
-
-    GRADUAL_CITY_BLOCK_RESOURCES = True
-
-    # WEATHER
-
-    RAIN_ENABLED: bool = False
-    RAIN_SPEED_REDUCTION = 2
-    RAIN_RADIUS_MIN = 50
-    RAIN_RADIUS_MAX = 100
-    RAIN_SPEED_MIN = 1
-    RAIN_SPEED_MAX = 10
-    RAIN_OCCURRENCES_MAX = 3
-    RAIN_COOLDOWN = 86400
-    RAIN_SPAWN_CHANCE = 0.0001
-    RAIN_SPAWN_OFFSET: int = 10
-
-    # VEHICLE SETTINGS
-
-    VEHICLE_MIN_SPEED: int = 1
-    VEHICLE_MAX_SPEED: int = 5
-
-    VEHICLE_RESPECT_AWARENESS: bool = False
-    VEHICLE_AWARENESS_RANGE: int = 10
-    VEHICLE_AWARENESS_WIDTH: int = 3
-
-    VEHICLE_OBSTACLE_PENALTY_VEHICLE = 1_000
-    VEHICLE_OBSTACLE_PENALTY_STOP = 500
-
-    VEHICLE_BASE_COLOR = "black"
-    VEHICLE_PARKED_COLOR = "aliceblue"
-
-    VEHICLE_CONTRAFLOW_OVERTAKE_ACTIVE = True
-    VEHICLE_CONTRAFLOW_PENALTY = 500
-    VEHICLE_MAX_CONTRAFLOW_OVERTAKE_STEPS: int = 6
-    VEHICLE_CONTRAFLOW_OVERTAKE_COLOR = "orange"
-
-    VEHICLE_MALFUNCTION_ACTIVE: bool = True
-    VEHICLE_MALFUNCTION_CHANCE: float = 1E-7
-    VEHICLE_MALFUNCTION_DURATION: int = 400
-    VEHICLE_MALFUNCTION_COLOR = "yellow"
-
-    VEHICLE_SIDESWIPE_COLLISION_ACTIVE: bool = False
-    VEHICLE_SIDESWIPE_COLLISION_CHANCE: float = 1E-3
-    VEHICLE_SIDESWIPE_COLLISION_DURATION: int = 600
-
-    VEHICLE_COLLISION_COLOR = "red"
-
-    # SERVICE VEHICLE SETTINGS
-
-    SERVICE_VEHICLE_BASE_COLOR = "darkolivegreen"
-    SERVICE_VEHICLE_MAX_LOAD_FOOD: float = 50.0
-    SERVICE_VEHICLE_MAX_LOAD_WASTE: float = 250.0
-    SERVICE_VEHICLE_LOAD_TIME: int = 20
-
     # CITY FLOW SETTINGS
-
-    # ──────────────────────────────────────────────────────────────────────────────
-    # 1) Zone & transition definitions
-    # ──────────────────────────────────────────────────────────────────────────────
 
     # Helper to map the 2-letter codes in your spec to block_type strings
     ABBR = {
@@ -306,6 +244,78 @@ class Defaults:
     TOTAL_SERVICE_VEHICLES_WASTE = 50
     INDIVIDUAL_SERVICE_VEHICLE_COOLDOWN = 3600
 
+    # CITY RESOURCES
+
+    FOOD_CAPACITY_PER_CELL = 2  # units per inner cell
+    FOOD_CONSUMPTION_TICKS = 50  # ticks between consumption
+    WASTE_CAPACITY_PER_CELL = 1.5  # units per inner cell
+    WASTE_PRODUCTION_TICKS = 100  # ticks between production
+
+    CITY_BLOCK_THAT_NEED_FOOD = ["Market", "Leisure"]
+    CITY_BLOCK_THAT_PRODUCE_WASTE = AVAILABLE_CITY_BLOCKS
+
+    GRADUAL_CITY_BLOCK_RESOURCES = True
+
+    # WEATHER
+
+    RAIN_ENABLED: bool = True
+    RAIN_SPEED_REDUCTION = 2
+    RAIN_RADIUS_MIN = 50
+    RAIN_RADIUS_MAX = 100
+    RAIN_SPEED_MIN = 1
+    RAIN_SPEED_MAX = 10
+    RAIN_OCCURRENCES_MAX = 3
+    RAIN_COOLDOWN = 86400
+    RAIN_SPAWN_CHANCE = 0.0001
+    RAIN_SPAWN_OFFSET: int = 10
+
+    # VEHICLE SETTINGS
+
+    VEHICLE_MIN_SPEED: int = 1
+    VEHICLE_MAX_SPEED: int = 1
+
+    VEHICLE_RESPECT_AWARENESS: bool = False
+    VEHICLE_AWARENESS_RANGE: int = 10
+    VEHICLE_AWARENESS_WIDTH: int = 3
+
+    VEHICLE_OBSTACLE_PENALTY_VEHICLE = 1_000_000
+    VEHICLE_OBSTACLE_PENALTY_STOP = 1_000_000
+
+    VEHICLE_BASE_COLOR = "black"
+    VEHICLE_PARKED_COLOR = "aliceblue"
+
+    VEHICLE_CONTRAFLOW_OVERTAKE_ACTIVE = True
+    VEHICLE_CONTRAFLOW_PENALTY = 500
+    VEHICLE_MAX_CONTRAFLOW_OVERTAKE_STEPS: int = 6
+    VEHICLE_CONTRAFLOW_OVERTAKE_COLOR = "orange"
+    VEHICLE_CONTRAFLOW_OVERTAKE_DURATION = 30
+
+    VEHICLE_MALFUNCTION_ACTIVE: bool = True
+    VEHICLE_MALFUNCTION_CHANCE: float = 1E-7
+    VEHICLE_MALFUNCTION_DURATION: int = 400
+    VEHICLE_MALFUNCTION_COLOR = "yellow"
+
+    VEHICLE_SIDESWIPE_COLLISION_ACTIVE: bool = True
+    VEHICLE_SIDESWIPE_COLLISION_CHANCE: float = 1E-3
+    VEHICLE_SIDESWIPE_COLLISION_DURATION: int = 600
+
+    VEHICLE_COLLISION_COLOR = "red"
+
+    # SERVICE VEHICLE SETTINGS
+
+    SERVICE_VEHICLE_BASE_COLOR = "darkolivegreen"
+    SERVICE_VEHICLE_MAX_LOAD_FOOD: float = 50.0
+    SERVICE_VEHICLE_MAX_LOAD_WASTE: float = 250.0
+    SERVICE_VEHICLE_LOAD_TIME: int = 20
+
+    # LIGHT AGENT SETTINGS
+    TRAFFIC_LIGHT_AGENT_ALGORITHM = "QUEUE-ACTUATED"  # "DISABLED", "FIXED-TIME", "QUEUE-ACTUATED"
+
+    # Parameters for the FIXED-TIME controller
+    TRAFFIC_LIGHT_GREEN_DURATION = 20  # ticks
+    TRAFFIC_LIGHT_YELLOW_DURATION = 3  # ticks before red
+    TRAFFIC_LIGHT_ALL_RED_DURATION = 2
+
     # RECORDING
 
     SAVE_TOTAL_RESULTS: bool = True
@@ -318,10 +328,10 @@ class Defaults:
     # OPTIMIZATION AND DEBUGGING
 
     USE_DUMMY_AGENTS: bool = False
-    CACHE_CELL_PORTRAYAL: bool = False
-    ENABLE_AGENT_PORTRAYAL: bool = True
-    ENABLE_TRAFFIC:bool = False
-    USE_CUDA_PATHFINDING: bool = False
+    CACHE_CELL_PORTRAYAL: bool = True
+    ENABLE_AGENT_PORTRAYAL: bool = False
+    ENABLE_TRAFFIC:bool = True
+    PATHFINDING_METHOD = "JIT" # "JIT", "CUDA" or "PYTHON"
 
     CACHED_TYPES = [z for z in ZONES if z not in [
         "HighwayEntrance",

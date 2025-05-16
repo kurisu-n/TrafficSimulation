@@ -112,7 +112,7 @@ class ServiceVehicleAgent(VehicleAgent):
                 self.current_block = next_blk
                 next_cell = next_blk.get_service_road_cell(self.city_model)
                 self.target = next_cell
-                self.path = self._compute_path(avoid_stops=True, avoid_vehicles=True)
+                self.path = self._compute_path()
                 self.phase = "to_block"
                 return
 
@@ -126,7 +126,7 @@ class ServiceVehicleAgent(VehicleAgent):
                         + abs(e.get_position()[1] - curr_y)
         )
         self.target = best
-        self.path = self._compute_path(avoid_stops=True, avoid_vehicles=True)
+        self.path = self._compute_path()
         self.remove_on_arrival = True
         self.phase = "to_exit"
 
