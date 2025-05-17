@@ -1,11 +1,5 @@
 # config.py
 from dataclasses import dataclass
-from enum import Enum, auto
-
-import numpy as np
-
-from Simulation.utilities.pathfinding import astar_jit
-
 
 @dataclass(frozen=True)
 class Defaults:
@@ -26,8 +20,8 @@ class Defaults:
     R2_R3_CHANCE_SPLIT:   float = 0.7
 
     # blocks
-    MIN_BLOCK_SPACING:    int   = 12
-    MAX_BLOCK_SPACING:    int   = 24
+    MIN_BLOCK_SPACING:    int   = 18
+    MAX_BLOCK_SPACING:    int   = 32
     # sub-blocks
     SUBBLOCK_CHANGE:      float = 0.7
     CARVE_SUBBLOCK_ROADS: bool  = True
@@ -272,9 +266,9 @@ class Defaults:
     # VEHICLE SETTINGS
 
     VEHICLE_MIN_SPEED: int = 1
-    VEHICLE_MAX_SPEED: int = 1
+    VEHICLE_MAX_SPEED: int = 5
 
-    VEHICLE_RESPECT_AWARENESS: bool = False
+    VEHICLE_RESPECT_AWARENESS: bool = True
     VEHICLE_AWARENESS_RANGE: int = 10
     VEHICLE_AWARENESS_WIDTH: int = 3
 
@@ -329,9 +323,9 @@ class Defaults:
 
     USE_DUMMY_AGENTS: bool = False
     CACHE_CELL_PORTRAYAL: bool = True
-    ENABLE_AGENT_PORTRAYAL: bool = False
-    ENABLE_TRAFFIC:bool = True
-    PATHFINDING_METHOD = "JIT" # "JIT", "CUDA" or "PYTHON"
+    ENABLE_AGENT_PORTRAYAL: bool = True
+    ENABLE_TRAFFIC:bool = False
+    PATHFINDING_METHOD = "CUDA" # "CUDA", "PYTHON" or "NUMBA"
 
     CACHED_TYPES = [z for z in ZONES if z not in [
         "HighwayEntrance",

@@ -81,6 +81,7 @@ class DynamicTrafficAgent(Agent):
         self.elapsed = 0.0          # seconds since *simulation* start
         self.current_day = 0        # 0‑based day index
         self.pending: list[Trip] = []
+        self.pending_by_day: dict[int, list[Trip]] = {}
 
         self.created_internal: int = 0
         self.created_through: int = 0
@@ -146,7 +147,8 @@ class DynamicTrafficAgent(Agent):
         to_spawn = [t for t in self.pending if prev < t.depart_secs <= self.elapsed]
         for trip in to_spawn:
             self._spawn(trip)
-        self.pending = [t for t in self.pending if t not in to_spawn]
+            self.pending.remove(trip)
+            self.pending_by_day[self.current_day].remove(trip)
 
     # ════════════════════════════════════════════════════════════════
     #  Time helper properties
@@ -222,19 +224,10 @@ class DynamicTrafficAgent(Agent):
 
     # ────────── Traffic‐stats helper methods ──────────
     def pending_trips_today(self, kind: str | None = None) -> list[Trip]:
-        """
-        All scheduled Trip objects for the current simulation day,
-        optionally filtered by kind ("internal", "through", "service_food", "service_waste").
-        """
-        # compute day's window in depart_secs
-        day_start = self.current_day * 86_400 - self.start_offset
-        day_end = (self.current_day + 1) * 86_400 - self.start_offset
-        trips = [
-            t for t in self.pending
-            if day_start <= t.depart_secs < day_end
-               and (kind is None or t.kind == kind)
-        ]
-        return trips
+        trips = self.pending_by_day.get(self.current_day, [])
+        if kind is None:
+            return list(trips)  # return a copy if you’re going to mutate
+        return [t for t in trips if t.kind == kind]
 
     def daily_total(self, kind: str) -> int:
         """Configured total for 'internal', 'through', or scheduled-today count for service types."""
@@ -312,14 +305,16 @@ class DynamicTrafficAgent(Agent):
         self.count_completed_through += 1
         self.daily_finished_through += 1
 
-
     def _generate_day(self, day_idx: int):
-        """Populate *pending* with all trips for *day_idx*."""
+        """Populate *pending* with all trips for *day_idx*, and index them by day."""
         city: CityModel = cast("CityModel", self.model)
         entrances = city.get_highway_entrances()  # list of CellAgent
         exits = city.get_highway_exits()  # list of CellAgent
 
         zones = Defaults.TIME_ZONES
+
+        # collect only today's trips for quick lookup later
+        day_trips: list[Trip] = []
 
         # 0) Pre-compute per-zone quotas so they sum exactly to total SV counts
         def compute_quotas(total: int, shares: list[float]) -> list[int]:
@@ -348,7 +343,7 @@ class DynamicTrafficAgent(Agent):
             z1 = day_idx * 86_400 + zone["end_hour"] * 3_600 - self.start_offset
             span = z1 - z0
 
-            # — Internal traffic (unchanged) —
+            # — Internal traffic —
             for (abbr_o, abbr_d), frac in zone["internal_distribution"].items():
                 cnt = round(self.P_int * frac)
                 if cnt == 0:
@@ -365,22 +360,26 @@ class DynamicTrafficAgent(Agent):
                     dblk = random.choice(dests)
                     o_cell = random.choice(oblk.get_entrances())
                     d_cell = random.choice(dblk.get_entrances())
-                    self.pending.append(Trip(o_cell, d_cell, t, "internal"))
+                    trip = Trip(o_cell, d_cell, t, "internal")
+                    self.pending.append(trip)
+                    day_trips.append(trip)
 
             # — Service vehicles (uniform per zone) —
             Nf = food_quotas[idx]
             for j in range(1, Nf + 1):
                 t = z0 + j * span / (Nf + 1)
-                start_cell = random.choice(
-                    entrances)  # CellAgent directly :contentReference[oaicite:0]{index=0}:contentReference[oaicite:1]{index=1}
-                self.pending.append(Trip(start_cell, None, t, "service_food"))
+                start_cell = random.choice(entrances)
+                trip = Trip(start_cell, None, t, "service_food")
+                self.pending.append(trip)
+                day_trips.append(trip)
 
             Nw = waste_quotas[idx]
             for j in range(1, Nw + 1):
                 t = z0 + j * span / (Nw + 1)
-                start_cell = random.choice(
-                    entrances)  # CellAgent directly :contentReference[oaicite:2]{index=2}:contentReference[oaicite:3]{index=3}
-                self.pending.append(Trip(start_cell, None, t, "service_waste"))
+                start_cell = random.choice(entrances)
+                trip = Trip(start_cell, None, t, "service_waste")
+                self.pending.append(trip)
+                day_trips.append(trip)
 
             # — Through traffic —
             thr = round(self.P_thr * zone["through_distribution"])
@@ -388,9 +387,14 @@ class DynamicTrafficAgent(Agent):
                 thr = max(0, thr - (Nf + Nw))
             for _ in range(thr):
                 t = z0 + random.random() * span
-                ent_cell = random.choice(entrances)  # use CellAgent directly
-                ex_cell = random.choice(exits)  # use CellAgent directly
-                self.pending.append(Trip(ent_cell, ex_cell, t, "through"))
+                ent_cell = random.choice(entrances)
+                ex_cell = random.choice(exits)
+                trip = Trip(ent_cell, ex_cell, t, "through")
+                self.pending.append(trip)
+                day_trips.append(trip)
+
+        # 2) Index today's trips for O(1) lookup in pending_trips_today()
+        self.pending_by_day[day_idx] = day_trips
 
     def _spawn(self, trip: Trip):
         city: CityModel = cast("CityModel", self.model)

@@ -230,14 +230,15 @@ class CellAgent(Agent):
     def set_light_go(self):
         if self.is_traffic_light():
             self.status = "Pass"
-            self.get_city_model().stop_cells.discard(self.position)
+            self.get_city_model().stop_map[self.position[1], self.position[0]] = 0
             for controlled_block in self.controlled_blocks:
                 controlled_block.status = "Pass"
 
     def set_light_stop(self):
         if self.is_traffic_light():
             self.status = "Stop"
-            self.get_city_model().stop_cells.add(self.position)
+            self.get_city_model().stop_map[self.position[1], self.position[0]] = 1
+
             for controlled_block in self.controlled_blocks:
                 controlled_block.status = "Stop"
 
