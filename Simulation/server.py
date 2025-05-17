@@ -16,7 +16,7 @@ from Simulation.visualization.model_parameters import model_params
 from Simulation.city_model import CityModel
 from Simulation.visualization.agent_portrayal import agent_portrayal
 
-def get_free_port(default=9010, max_tries=100):
+def get_free_port(default=9000, max_tries=100):
     for offset in range(max_tries):
         port = default + offset
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

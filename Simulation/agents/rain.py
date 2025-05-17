@@ -7,6 +7,7 @@ import random
 import math
 from typing import TYPE_CHECKING, Set
 
+import numpy as np
 from mesa import Agent
 from Simulation.config import Defaults
 
@@ -54,6 +55,8 @@ class RainAgent(Agent):
         self._ymin = -self.radius
         self._ymax = city_model.get_height() + self.radius
 
+
+
     def step(self):
         # move cloud
         self.x += self.dx
@@ -91,6 +94,9 @@ class RainManager(Agent):
         self.cooldown = 0  # in model steps
         # Track previously raining cells to avoid full-grid clears
         self._prev_raining: Set[CellAgent] = set()
+
+        h, w = city_model.get_height(), city_model.get_width()
+        self.rain_map = np.zeros((h, w), dtype=np.int8)
 
     def add_random_rain(self):
         """Spawn one RainAgent just inside a random edge, heading toward a corner."""
@@ -168,8 +174,11 @@ class RainManager(Agent):
         new_raining: Set[CellAgent] = set()
         for rain in self.city_model.rains:
             new_raining |= rain.covered_cells
+
         for cell in new_raining:
+            x, y = cell.get_position()
             cell.is_raining = True
+            self.rain_map[y, x] = 1
 
         # 5) remember for next tick
         self._prev_raining = new_raining

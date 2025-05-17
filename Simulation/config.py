@@ -20,8 +20,8 @@ class Defaults:
     R2_R3_CHANCE_SPLIT:   float = 0.7
 
     # blocks
-    MIN_BLOCK_SPACING:    int   = 18
-    MAX_BLOCK_SPACING:    int   = 32
+    MIN_BLOCK_SPACING:    int   = 9
+    MAX_BLOCK_SPACING:    int   = 18
     # sub-blocks
     SUBBLOCK_CHANGE:      float = 0.7
     CARVE_SUBBLOCK_ROADS: bool  = True
@@ -303,7 +303,7 @@ class Defaults:
     SERVICE_VEHICLE_LOAD_TIME: int = 20
 
     # LIGHT AGENT SETTINGS
-    TRAFFIC_LIGHT_AGENT_ALGORITHM = "NEIGHBOR-ENHANCED-PRESSURE"  # "DISABLED", "FIXED-TIME", "QUEUE-ACTUATED"
+    TRAFFIC_LIGHT_AGENT_ALGORITHM = "NEIGHBOR_ENHANCED_PRESSURE"  # "DISABLED", "FIXED_TIME", "PRESSURE_CONTROL", "NEIGHBOR_ENHANCED_PRESSURE", "NEIGHBOR_RL"
 
     # Parameters for the FIXED-TIME controller
     TRAFFIC_LIGHT_GREEN_DURATION = 20  # ticks
@@ -319,6 +319,13 @@ class Defaults:
     RESULTS_INDIVIDUAL_INTERVAL_UNIT: str = "minutes"
     RESULTS_INDIVIDUAL_INTERVAL_VALUE: int = 5
 
+    # STATISTICS
+
+    SHOW_TIME_STATISTICS: bool = True
+    SHOW_TRAFFIC_STATISTICS: bool = True
+    SHOW_METRICS_STATISTICS: bool = True
+    STATISTICS_UPDATE_INTERVAL: int = 5
+
     # OPTIMIZATION AND DEBUGGING
 
     USE_DUMMY_AGENTS: bool = False
@@ -326,6 +333,10 @@ class Defaults:
     ENABLE_AGENT_PORTRAYAL: bool = False
     ENABLE_TRAFFIC:bool = True
     PATHFINDING_METHOD = "NUMBA" # "CUDA", "PYTHON" or "NUMBA"
+    PATHFINDING_COOLDOWN: int = 5
+    PATHFINDING_CACHE: bool = True
+
+    MULTIPROCESSING: bool = False
 
     CACHED_TYPES = [z for z in ZONES if z not in [
         "HighwayEntrance",

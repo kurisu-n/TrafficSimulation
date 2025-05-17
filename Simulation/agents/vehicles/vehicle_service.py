@@ -119,7 +119,7 @@ class ServiceVehicleAgent(VehicleAgent):
         # otherwise, head for the nearest highway exit
         exits = self.city_model.get_highway_exits()
         # pick by Manhattan distance
-        curr_x, curr_y = self.current_cell.get_position()
+        curr_x, curr_y = self.pos
         best = min(
             exits,
             key=lambda e: abs(e.get_position()[0] - curr_x)

@@ -15,7 +15,12 @@ from Simulation.agents.city_structure_entities.city_block import CityBlock
 from Simulation.agents.city_structure_entities.intersection_light_group import IntersectionLightGroup
 from Simulation.agents.dummy import DummyAgent
 from Simulation.agents.dynamic_traffic_generator import DynamicTrafficAgent
+from Simulation.utilities.numba_utilities import manhattan_distance
 from Simulation.utilities.pathfinding.astar_cuda import PathPlanner
+
+from joblib import Parallel, delayed
+import multiprocessing
+
 
 class CityModel(Model):
     def __init__(self,
@@ -132,14 +137,17 @@ class CityModel(Model):
         self._populate_cell_cache()
         self._build_simple_maps()
 
+        self._path_cache: dict[tuple[int, int], list[tuple[int, int]]] = {}
 
         if Defaults.PATHFINDING_METHOD == "CUDA":
             self.path_planner = PathPlanner(self)
 
+
+        self.rains = []
         if Defaults.RAIN_ENABLED:
-            self.rains = []
-            rain_manager = RainManager("RainManager", self)
-            self.schedule.add(rain_manager)
+            self.rain_map = np.zeros((height, width), dtype=np.int8)
+            self.rain_manager = RainManager("RainManager", self)
+            self.schedule.add(self.rain_manager)
 
         if Defaults.ENABLE_TRAFFIC:
             self.dynamic_traffic_generator = DynamicTrafficAgent("DTA",self)
@@ -1636,10 +1644,23 @@ class CityModel(Model):
     def step(self):
         self.tick_cache.clear()
         self.tick_grid = None
-        self.schedule.step()
+
+        if Defaults.RAIN_ENABLED:
+            self.rain_map = self.rain_manager.rain_map
+
         if Defaults.PATHFINDING_METHOD == "CUDA":
             self.path_planner.solve_all()
+
+        self.schedule.step()
+
         self.step_count += 1
+
+    def run_parallel_decide(self):
+        agents = list(self.schedule.agents)
+        Parallel(n_jobs=multiprocessing.cpu_count())(
+            delayed(lambda agent: agent.step_decide())(agent)
+            for agent in agents if hasattr(agent, "step_decide")
+        )
 
     # — Convenience getters —
 
@@ -1678,20 +1699,20 @@ class CityModel(Model):
 
     def place_vehicle(self, vehicle: VehicleAgent, pos: tuple[int, int]):
         """Place a new VehicleAgent at the vacated position."""
-        vehicle.current_cell = self.get_cell_contents(pos[0], pos[1])[0]
-        vehicle.current_cell.occupied = True
-        self.remove_dummy(pos[0], pos[1])
-        self.grid.place_agent(vehicle, vehicle.current_cell.get_position())
+        self.get_cell_contents(pos[0], pos[1])[0].occupied = True
+
+        if self.use_dummy_agents:
+            self.remove_dummy(pos[0], pos[1])
+
+        self.grid.place_agent(vehicle, pos)
         self.occupancy_map[pos[1], pos[0]] = 1
         self.schedule.add(vehicle)
 
     def remove_vehicle(self, vehicle: VehicleAgent):
-        v_pos = None
-
-        if vehicle.current_cell is not None:
-            vehicle.current_cell.occupied = False
-            v_pos = vehicle.current_cell.get_position()
-            self.occupancy_map[v_pos[1], v_pos[0]] = 0
+        x, y = vehicle.pos
+        self.get_cell_contents(x, y)[0].occupied = False
+        self.occupancy_map[y, x] = 0
+        v_pos = (x, y)
 
         self.grid.remove_agent(vehicle)
         self.schedule.remove(vehicle)
@@ -1699,20 +1720,24 @@ class CityModel(Model):
         if self.use_dummy_agents and  v_pos is not None:
             self.place_dummy(v_pos[0], v_pos[1])
 
-    def move_vehicle(self, vehicle: VehicleAgent, new_cell: CellAgent, new_pos: tuple[int, int], old_pos: tuple[int, int]):
+
+
+    def move_vehicle(self, vehicle: VehicleAgent, new_pos: tuple[int, int], old_pos: tuple[int, int]):
         if self.use_dummy_agents:
             self.remove_dummy(new_pos[0], new_pos[1])
 
-        if vehicle.current_cell is not None:
-            old_coords = vehicle.current_cell.get_position()
-            self.occupancy_map[old_coords[1], old_coords[0]] = 0
-            vehicle.current_cell.occupied = False
+        ox, oy = old_pos
+        nx, ny = new_pos
 
-        vehicle.current_cell = new_cell
-        new_cell.occupied = True
+        self.occupancy_map[oy, ox] = 0
+        self.get_cell_contents(ox, oy)[0].occupied = False
 
         self.grid.move_agent(vehicle, new_pos)
-        self.occupancy_map[new_pos[1], new_pos[0]] = 1
+
+        self.get_cell_contents(nx, ny)[0].occupied = True
+        self.occupancy_map[ny, nx] = 1
+
+        vehicle.pos = new_pos  # update agent's cached position
 
         if self.use_dummy_agents and old_pos is not None:
             self.place_dummy(old_pos[0], old_pos[1])
@@ -1851,7 +1876,7 @@ class CityModel(Model):
         4-neighbouring grid positions (N, S, E, W).
         """
         (x1, y1), (x2, y2) = a.position, b.position
-        return abs(x1 - x2) + abs(y1 - y2) == 1
+        return manhattan_distance((x1, y1), (x2, y2))
 
     # ── public API ─────────────────────────────────────────────────
     def get_start_blocks(self):

@@ -139,6 +139,7 @@ class CellAgent(Agent):
 
     def step(self):
         self.is_raining = False
+        self.rain_map.fill(0)
 
     # ———— utility/query methods ————
 

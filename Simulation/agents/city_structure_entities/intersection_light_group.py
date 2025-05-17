@@ -1,3 +1,4 @@
+import random
 from typing import Dict, List, Set, cast, TYPE_CHECKING
 from mesa import Agent
 from Simulation.config import Defaults
@@ -6,6 +7,10 @@ from Simulation.utilities.general import *
 if TYPE_CHECKING:
     from Simulation.city_model import CityModel
     from Simulation.agents.city_structure_entities.cell import CellAgent
+
+if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM == "NEIGHBOR_RL":
+    from Simulation.utilities.light_group_managment.reinforcement_learning import make_policy_net, run_neighbor_rl
+    import tensorflow as tf
 
 
 class IntersectionLightGroup(Agent):
@@ -43,6 +48,14 @@ class IntersectionLightGroup(Agent):
         # Neighbor Pressure control state
         self._pressure_ns = 0
         self._pressure_ew = 0
+
+        # RL-specific fields
+        if Defaults.PATHFINDING_METHOD == "NEIGHBOR_RL":
+            self.rl_policy = make_policy_net(input_dim=7)
+            self.optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3)
+            self.memory = []  # stores (state, action, reward, next_state)
+            self._rl_phase = 0   # 0=NS-green, 2=EW-green
+            self._rl_timer = 0
 
 
     # ------------------------------------------------------------------
@@ -213,14 +226,16 @@ class IntersectionLightGroup(Agent):
     # ------------------------------------------------------------------
     def step(self):
         algo = Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM
-        if algo == "FIXED-TIME":
+        if algo == "FIXED_TIME":
             self.run_fixed_time()
-        elif algo == "QUEUE-ACTUATED":
+        elif algo == "QUEUE_ACTUATED":
             self.run_queue_actuated()
-        elif algo == "PRESSURE-CONTROL":
+        elif algo == "PRESSURE_CONTROL":
             self.run_pressure_control()
-        elif algo == "NEIGHBOR-ENHANCED-PRESSURE":
+        elif algo == "NEIGHBOR_ENHANCED_PRESSURE":
             self.run_neighbor_pressure_control()
+        elif algo == "NEIGHBOR_RL":
+            run_neighbor_rl(self)
 
     def run_fixed_time(self):
         """Two-phase fixed-time controller (N–S vs. E–W) with all-red interlocks."""

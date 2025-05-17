@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import datetime
 import math
 import os
@@ -100,6 +99,11 @@ class DynamicTrafficAgent(Agent):
         self.daily_finished_through = 0
         self.daily_difference_history: list[int] = []
 
+        self.cached_stats: dict[str, int | float | None] = {}
+
+        self._ticks_since_last_stats = 0
+        self._cached_stats_dirty = True
+
         self._setup_results_dir()
 
         if Defaults.SAVE_TOTAL_RESULTS:
@@ -149,6 +153,14 @@ class DynamicTrafficAgent(Agent):
             self._spawn(trip)
             self.pending.remove(trip)
             self.pending_by_day[self.current_day].remove(trip)
+
+        self._ticks_since_last_stats += 1
+        if self._ticks_since_last_stats >= Defaults.STATISTICS_UPDATE_INTERVAL:
+            self._update_cached_stats()
+            self._ticks_since_last_stats = 0
+            self._cached_stats_dirty = False
+        else:
+            self._cached_stats_dirty = True
 
     # ════════════════════════════════════════════════════════════════
     #  Time helper properties
@@ -270,26 +282,7 @@ class DynamicTrafficAgent(Agent):
         return min(future) if future else None
 
     def live_count(self, kind: str) -> int:
-        """
-        Current active vehicles:
-         - for "internal"/"through", counts VehicleAgent.population_type
-         - for service types, counts ServiceVehicleAgent.service_type
-        """
-        agents = self.model.schedule.agents
-        if kind in ("internal", "through"):
-            from Simulation.agents.vehicles.vehicle_base import VehicleAgent
-            return sum(
-                1
-                for ag in agents
-                if isinstance(ag, VehicleAgent) and ag.population_type == kind
-            )
-        from Simulation.agents.vehicles.vehicle_service import ServiceVehicleAgent
-        svc = "Food" if kind == "service_food" else "Waste"
-        return sum(
-            1
-            for ag in agents
-            if isinstance(ag, ServiceVehicleAgent) and ag.service_type == svc
-        )
+        return self.cached_stats.get(f"live_{kind}", 0)
 
 
     def record_internal_trip(self, duration: float, distance: float):
@@ -495,6 +488,11 @@ class DynamicTrafficAgent(Agent):
         """If due, overwrite the total‐statistics CSV."""
         if not getattr(self, "save_totals", False):
             return
+
+        if self._cached_stats_dirty:
+            self._update_cached_stats()
+            self._cached_stats_dirty = False
+
         if self.elapsed >= self._next_total_snapshot:
             with open(self.totals_path, "w") as f:
                 f.write(
@@ -515,6 +513,11 @@ class DynamicTrafficAgent(Agent):
         """If due, append a new snapshot‐row to the same CSV."""
         if not getattr(self, "save_individual", False):
             return
+
+        if self._cached_stats_dirty:
+            self._update_cached_stats()
+            self._cached_stats_dirty = False
+
         if self.elapsed >= self._next_indiv_snapshot:
             # compute unit‐value index (e.g. 2, 4, 6 for a 2-hour interval)
             # unit_secs is self._indiv_interval divided by interval value
@@ -536,3 +539,72 @@ class DynamicTrafficAgent(Agent):
                 f.write(",".join(row) + "\n")
 
             self._next_indiv_snapshot += self._indiv_interval
+
+    def _update_cached_stats(self):
+        from Simulation.agents.vehicles.vehicle_base import VehicleAgent
+        from Simulation.agents.vehicles.vehicle_service import ServiceVehicleAgent
+
+        # Init counters
+        count_live_internal = 0
+        count_live_through = 0
+        count_live_food = 0
+        count_live_waste = 0
+
+        count_collision = 0
+        count_malfunction = 0
+        count_parked = 0
+        count_overtaking = 0
+
+        # Single-pass agent scan
+        for ag in self.model.schedule.agents:
+            if isinstance(ag, VehicleAgent):
+                if ag.population_type == "internal":
+                    count_live_internal += 1
+                elif ag.population_type == "through":
+                    count_live_through += 1
+
+                if ag.is_in_collision:
+                    count_collision += 1
+                if ag.is_in_malfunction:
+                    count_malfunction += 1
+                if ag.is_parked:
+                    count_parked += 1
+                if ag.is_overtaking:
+                    count_overtaking += 1
+
+            elif isinstance(ag, ServiceVehicleAgent):
+                if ag.service_type == "Food":
+                    count_live_food += 1
+                elif ag.service_type == "Waste":
+                    count_live_waste += 1
+
+        # Store live counts
+        self.cached_stats["live_internal"] = count_live_internal
+        self.cached_stats["live_through"] = count_live_through
+        self.cached_stats["live_service_food"] = count_live_food
+        self.cached_stats["live_service_waste"] = count_live_waste
+
+        # Store status counts
+        self.cached_stats["collisions"] = count_collision
+        self.cached_stats["malfunctions"] = count_malfunction
+        self.cached_stats["parked"] = count_parked
+        self.cached_stats["overtaking"] = count_overtaking
+
+        # Daily trip statistics (direct access — no method call overhead)
+        for kind in ("internal", "through", "service_food", "service_waste"):
+            total = (
+                self.P_int if kind == "internal" else
+                self.P_thr if kind == "through" else
+                getattr(self, f"created_{kind}") + len(self.pending_trips_today(kind))
+            )
+            created = getattr(self, f"created_{kind}")
+            remaining = total - created
+            percentage = (created / total * 100) if total else 0.0
+            eta = self.next_service_eta(kind)
+
+            self.cached_stats[f"daily_total_{kind}"] = total
+            self.cached_stats[f"created_{kind}"] = created
+            self.cached_stats[f"remaining_{kind}"] = remaining
+            self.cached_stats[f"percentage_created_{kind}"] = percentage
+            self.cached_stats[f"eta_{kind}"] = eta
+
