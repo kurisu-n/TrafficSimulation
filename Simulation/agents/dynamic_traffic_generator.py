@@ -114,8 +114,6 @@ class DynamicTrafficAgent(Agent):
 
         self._generate_day(0)
 
-
-
     # ════════════════════════════════════════════════════════════════
     #  Public step
     # ════════════════════════════════════════════════════════════════
@@ -185,49 +183,6 @@ class DynamicTrafficAgent(Agent):
     @property
     def day(self) -> int:
         return self.current_day
-
-    # —— elapsed wall‑clock helpers ——
-    @property
-    def elapsed_seconds(self) -> int:
-        return int(self.elapsed)
-
-    @property
-    def elapsed_minutes(self) -> int:
-        return int(self.elapsed // 60)
-
-    @property
-    def elapsed_hours(self) -> int:
-        return int(self.elapsed // 3_600)
-
-    @property
-    def elapsed_days(self) -> int:
-        return int(self.elapsed // 86_400)
-
-    @property
-    def avg_duration_internal(self) -> float:
-        return (self.total_duration_internal / self.count_completed_internal
-                if self.count_completed_internal else 0.0)
-
-    @property
-    def avg_duration_through(self) -> float:
-        return (self.total_duration_through / self.count_completed_through
-                if self.count_completed_through else 0.0)
-
-    @property
-    def avg_time_per_unit_internal(self) -> float:
-        return ((self.total_duration_internal / self.total_distance_internal)
-                if self.total_distance_internal else 0.0)
-
-    @property
-    def avg_time_per_unit_through(self) -> float:
-        return ((self.total_duration_through / self.total_distance_through)
-                if self.total_distance_through else 0.0)
-
-    @property
-    def avg_daily_difference(self) -> float:
-        if not self.daily_difference_history:
-            return 0.0
-        return sum(self.daily_difference_history) / len(self.daily_difference_history)
 
     # convenience tuple
     def now_dhms(self) -> tuple[int, int, int, int]:
@@ -483,7 +438,6 @@ class DynamicTrafficAgent(Agent):
         with open(self.snapshot_path, "w") as f:
             f.write(",".join(headers) + "\n")
 
-
     def _maybe_save_totals(self):
         """If due, overwrite the total‐statistics CSV."""
         if not getattr(self, "save_totals", False):
@@ -501,11 +455,11 @@ class DynamicTrafficAgent(Agent):
                     "avg_daily_difference\n"
                 )
                 f.write(
-                    f"{self.avg_duration_internal},"
-                    f"{self.avg_duration_through},"
-                    f"{self.avg_time_per_unit_internal},"
-                    f"{self.avg_time_per_unit_through},"
-                    f"{self.avg_daily_difference}\n"
+                    f"{self.cached_stats.get('avg_duration_internal', 0.0)},"
+                    f"{self.cached_stats.get('avg_duration_through', 0.0)},"
+                    f"{self.cached_stats.get('avg_time_per_unit_internal', 0.0)},"
+                    f"{self.cached_stats.get('avg_time_per_unit_through', 0.0)},"
+                    f"{self.cached_stats.get('avg_daily_difference', 0.0)}\n"
                 )
             self._next_total_snapshot += self._total_interval
 
@@ -519,21 +473,17 @@ class DynamicTrafficAgent(Agent):
             self._cached_stats_dirty = False
 
         if self.elapsed >= self._next_indiv_snapshot:
-            # compute unit‐value index (e.g. 2, 4, 6 for a 2-hour interval)
-            # unit_secs is self._indiv_interval divided by interval value
-            # so index = next_snapshot_time / unit_secs
             unit = Defaults.RESULTS_INDIVIDUAL_INTERVAL_UNIT
-            secs_per_unit = {"hours":3600, "minutes":60, "seconds":1}[unit]
+            secs_per_unit = {"hours": 3600, "minutes": 60, "seconds": 1}[unit]
             idx = int(self._next_indiv_snapshot / secs_per_unit)
 
-            # append row
             row = [
                 str(idx),
-                f"{self.avg_duration_internal}",
-                f"{self.avg_duration_through}",
-                f"{self.avg_time_per_unit_internal}",
-                f"{self.avg_time_per_unit_through}",
-                f"{self.avg_daily_difference}"
+                f"{self.cached_stats.get('avg_duration_internal', 0.0)}",
+                f"{self.cached_stats.get('avg_duration_through', 0.0)}",
+                f"{self.cached_stats.get('avg_time_per_unit_internal', 0.0)}",
+                f"{self.cached_stats.get('avg_time_per_unit_through', 0.0)}",
+                f"{self.cached_stats.get('avg_daily_difference', 0.0)}"
             ]
             with open(self.snapshot_path, "a") as f:
                 f.write(",".join(row) + "\n")
@@ -541,70 +491,96 @@ class DynamicTrafficAgent(Agent):
             self._next_indiv_snapshot += self._indiv_interval
 
     def _update_cached_stats(self):
-        from Simulation.agents.vehicles.vehicle_base import VehicleAgent
-        from Simulation.agents.vehicles.vehicle_service import ServiceVehicleAgent
 
-        # Init counters
-        count_live_internal = 0
-        count_live_through = 0
-        count_live_food = 0
-        count_live_waste = 0
+        # Average durations
+        self.cached_stats["avg_duration_internal"] = (
+            self.total_duration_internal / self.count_completed_internal
+            if self.count_completed_internal else 0.0
+        )
+        self.cached_stats["avg_duration_through"] = (
+            self.total_duration_through / self.count_completed_through
+            if self.count_completed_through else 0.0
+        )
+        self.cached_stats["avg_time_per_unit_internal"] = (
+            self.total_duration_internal / self.total_distance_internal
+            if self.total_distance_internal else 0.0
+        )
+        self.cached_stats["avg_time_per_unit_through"] = (
+            self.total_duration_through / self.total_distance_through
+            if self.total_distance_through else 0.0
+        )
+        self.cached_stats["avg_daily_difference"] = (
+            sum(self.daily_difference_history) / len(self.daily_difference_history)
+            if self.daily_difference_history else 0.0
+        )
 
-        count_collision = 0
-        count_malfunction = 0
-        count_parked = 0
-        count_overtaking = 0
+        if Defaults.SHOW_TRAFFIC_STATISTICS:
+            from Simulation.agents.vehicles.vehicle_base import VehicleAgent
+            from Simulation.agents.vehicles.vehicle_service import ServiceVehicleAgent
 
-        # Single-pass agent scan
-        for ag in self.model.schedule.agents:
-            if isinstance(ag, VehicleAgent):
-                if ag.population_type == "internal":
-                    count_live_internal += 1
-                elif ag.population_type == "through":
-                    count_live_through += 1
+            # Init counters
+            count_live_internal = 0
+            count_live_through = 0
+            count_live_food = 0
+            count_live_waste = 0
 
-                if ag.is_in_collision:
-                    count_collision += 1
-                if ag.is_in_malfunction:
-                    count_malfunction += 1
-                if ag.is_parked:
-                    count_parked += 1
-                if ag.is_overtaking:
-                    count_overtaking += 1
+            count_collision = 0
+            count_malfunction = 0
+            count_parked = 0
+            count_overtaking = 0
 
-            elif isinstance(ag, ServiceVehicleAgent):
-                if ag.service_type == "Food":
-                    count_live_food += 1
-                elif ag.service_type == "Waste":
-                    count_live_waste += 1
+            # Single-pass agent scan
+            for ag in self.model.schedule.agents:
+                if isinstance(ag, VehicleAgent):
+                    if ag.population_type == "internal":
+                        count_live_internal += 1
+                    elif ag.population_type == "through":
+                        count_live_through += 1
 
-        # Store live counts
-        self.cached_stats["live_internal"] = count_live_internal
-        self.cached_stats["live_through"] = count_live_through
-        self.cached_stats["live_service_food"] = count_live_food
-        self.cached_stats["live_service_waste"] = count_live_waste
+                    if ag.is_in_collision:
+                        count_collision += 1
+                    if ag.is_in_malfunction:
+                        count_malfunction += 1
+                    if ag.is_parked:
+                        count_parked += 1
+                    if ag.is_overtaking:
+                        count_overtaking += 1
 
-        # Store status counts
-        self.cached_stats["collisions"] = count_collision
-        self.cached_stats["malfunctions"] = count_malfunction
-        self.cached_stats["parked"] = count_parked
-        self.cached_stats["overtaking"] = count_overtaking
+                elif isinstance(ag, ServiceVehicleAgent):
+                    if ag.service_type == "Food":
+                        count_live_food += 1
+                    elif ag.service_type == "Waste":
+                        count_live_waste += 1
 
-        # Daily trip statistics (direct access — no method call overhead)
-        for kind in ("internal", "through", "service_food", "service_waste"):
-            total = (
-                self.P_int if kind == "internal" else
-                self.P_thr if kind == "through" else
-                getattr(self, f"created_{kind}") + len(self.pending_trips_today(kind))
-            )
-            created = getattr(self, f"created_{kind}")
-            remaining = total - created
-            percentage = (created / total * 100) if total else 0.0
-            eta = self.next_service_eta(kind)
+            self.cached_stats["count_completed_internal"] = self.count_completed_internal
 
-            self.cached_stats[f"daily_total_{kind}"] = total
-            self.cached_stats[f"created_{kind}"] = created
-            self.cached_stats[f"remaining_{kind}"] = remaining
-            self.cached_stats[f"percentage_created_{kind}"] = percentage
-            self.cached_stats[f"eta_{kind}"] = eta
+            # Store live counts
+            self.cached_stats["live_internal"] = count_live_internal
+            self.cached_stats["live_through"] = count_live_through
+            self.cached_stats["live_service_food"] = count_live_food
+            self.cached_stats["live_service_waste"] = count_live_waste
+
+            # Store status counts
+            self.cached_stats["collisions"] = count_collision
+            self.cached_stats["malfunctions"] = count_malfunction
+            self.cached_stats["parked"] = count_parked
+            self.cached_stats["overtaking"] = count_overtaking
+
+            # Daily trip statistics (direct access — no method call overhead)
+            for kind in ("internal", "through", "service_food", "service_waste"):
+                total = (
+                    self.P_int if kind == "internal" else
+                    self.P_thr if kind == "through" else
+                    getattr(self, f"created_{kind}") + len(self.pending_trips_today(kind))
+                )
+                created = getattr(self, f"created_{kind}")
+                remaining = total - created
+                percentage = (created / total * 100) if total else 0.0
+                eta = self.next_service_eta(kind)
+
+                self.cached_stats[f"daily_total_{kind}"] = total
+                self.cached_stats[f"created_{kind}"] = created
+                self.cached_stats[f"remaining_{kind}"] = remaining
+                self.cached_stats[f"percentage_created_{kind}"] = percentage
+                self.cached_stats[f"eta_{kind}"] = eta
 

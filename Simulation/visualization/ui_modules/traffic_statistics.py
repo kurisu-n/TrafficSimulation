@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections import deque
 from typing import TYPE_CHECKING
 from mesa.visualization.modules import TextElement
 from Simulation.config import Defaults
@@ -24,30 +25,34 @@ class TrafficStatistics(TextElement):
         self._smoothed_tick_ms: float | None = None
         self._smoothed_delta_ms: float | None = None
         self._tick_alpha = 0.1  # smoothing factor for tick and delta
+        self._last_tick_time = None
+        self._tick_history = deque(maxlen=200)
 
     def render(self, model: CityModel) -> str:
         # measure real tick duration
         now = time.time()
-        current_tick = now - self._last_render
-        delta = (current_tick - self._last_tick_duration) if self._last_tick_duration is not None else 0.0
-        self._last_tick_duration = current_tick
+        current_tick = now - self._last_render if self._last_render is not None else 0.0
         self._last_render = now
-        tick_ms = current_tick * 1000
-        delta_ms = delta * 1000
 
-        # smoothing
-        if self._smoothed_tick_ms is None:
-            self._smoothed_tick_ms = tick_ms
-        else:
-            self._smoothed_tick_ms = self._tick_alpha * tick_ms + (1 - self._tick_alpha) * self._smoothed_tick_ms
-        if self._smoothed_delta_ms is None:
-            self._smoothed_delta_ms = delta_ms
-        else:
-            self._smoothed_delta_ms = self._tick_alpha * delta_ms + (1 - self._tick_alpha) * self._smoothed_delta_ms
+        # store the raw tick time
+        self._tick_history.append(current_tick)
 
-        tick_str = f"{tick_ms:.1f}ms"
-        smooth_tick_str = f"{self._smoothed_tick_ms:.1f}ms"
-        smooth_delta_str = f"{self._smoothed_delta_ms:+.1f}ms"
+        # average tick duration
+        avg_tick = sum(self._tick_history) / len(self._tick_history)
+        smooth_tick_ms = avg_tick * 1000
+
+        # compute deltas between ticks
+        if len(self._tick_history) >= 2:
+            deltas = [self._tick_history[i] - self._tick_history[i - 1] for i in range(1, len(self._tick_history))]
+            avg_delta = sum(deltas) / len(deltas)
+        else:
+            avg_delta = 0.0
+
+        smooth_delta_ms = avg_delta * 1000
+
+        # formatting
+        smooth_tick_str = f"{smooth_tick_ms:.1f}ms"
+        smooth_delta_str = f"{smooth_delta_ms:+.1f}ms"
 
         # find dynamic traffic agent
         dta = next((ag for ag in model.schedule.agents
@@ -98,6 +103,10 @@ class TrafficStatistics(TextElement):
                   <div class="value">{smooth_tick_str}</div>
                 </div>
                 <div class="top-info-cell">
+                  <div class="label">Δ/tick</div>
+                  <div class="value">{smooth_delta_str}</div>
+                </div>
+                <div class="top-info-cell">
                   <div class="label">Ticks/sec</div>
                   <div class="value">{ticks_per_second:.1f}</div>
                 </div>
@@ -123,17 +132,21 @@ class TrafficStatistics(TextElement):
             rem_int = dta.cached_stats.get("remaining_internal", 0)
             live_int = dta.live_count("internal")
 
-            completed_int = dta.count_completed_internal
-            total_food = dta.daily_total("service_food")
-            created_food = dta.created_count("service_food")
-            rem_food = dta.remaining("service_food")
-            live_food = dta.live_count("service_food")
-            eta_food = fmt_time(dta.next_service_eta("service_food"))
-            total_waste = dta.daily_total("service_waste")
-            created_waste = dta.created_count("service_waste")
-            rem_waste = dta.remaining("service_waste")
-            live_waste = dta.live_count("service_waste")
-            eta_waste = fmt_time(dta.next_service_eta("service_waste"))
+            completed_int = dta.cached_stats.get("count_completed_internal", 0)
+
+            # Service: Food
+            total_food = dta.cached_stats.get("daily_total_service_food", 0)
+            created_food = dta.cached_stats.get("created_service_food", 0)
+            rem_food = dta.cached_stats.get("remaining_service_food", 0)
+            live_food = dta.cached_stats.get("live_service_food", 0)  # or use live_count("service_food")
+            eta_food = fmt_time(dta.cached_stats.get("eta_service_food", 0.0))
+
+            # Service: Waste
+            total_waste = dta.cached_stats.get("daily_total_service_waste", 0)
+            created_waste = dta.cached_stats.get("created_service_waste", 0)
+            rem_waste = dta.cached_stats.get("remaining_service_waste", 0)
+            live_waste = dta.cached_stats.get("live_service_waste", 0)  # or use live_count("service_waste")
+            eta_waste = fmt_time(dta.cached_stats.get("eta_service_waste", 0.0))
 
             collisions = dta.cached_stats.get("collisions", 0)
             malfunctions = dta.cached_stats.get("malfunctions", 0)
@@ -195,11 +208,11 @@ class TrafficStatistics(TextElement):
         metrics_section = ''
         if Defaults.SHOW_METRICS_STATISTICS:
 
-            avg_dur_thr_s = fmt_time(dta.avg_duration_through)
-            avg_dur_int_s = fmt_time(dta.avg_duration_internal)
-            avg_tu_thr = fmt_time(dta.avg_time_per_unit_through)
-            avg_tu_int = fmt_time(dta.avg_time_per_unit_internal)
-            avg_daily_diff = dta.avg_daily_difference
+            avg_dur_thr_s = fmt_time(dta.cached_stats.get("avg_duration_through", 0.0))
+            avg_dur_int_s = fmt_time(dta.cached_stats.get("avg_duration_internal", 0.0))
+            avg_tu_thr = fmt_time(dta.cached_stats.get("avg_time_per_unit_through", 0.0))
+            avg_tu_int = fmt_time(dta.cached_stats.get("avg_time_per_unit_internal", 0.0))
+            avg_daily_diff = dta.cached_stats.get("avg_daily_difference", 0.0)
             metrics_section = f'''
         <div id="stats-grid">
           <div class="stat-category">
@@ -244,15 +257,15 @@ class TrafficStatistics(TextElement):
                 justify-items: center;
                 align-items: center;
                 background: #111;
-                padding: 10px 14px;
+                padding: 5px 7px;
                 border: 1px solid #444;
-                border-radius: 6px;
+                border-radius: 2px;
                 font-size: 14px;
                 font-weight: bold;
                 text-align: center;
-                min-width: 100px;
+                min-width: 40px;
                 height: 100px;
-                row-gap: 6px;
+                row-gap: 2px;
               }}
             
               .top-info-cell .label {{
