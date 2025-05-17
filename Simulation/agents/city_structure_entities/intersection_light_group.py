@@ -36,6 +36,14 @@ class IntersectionLightGroup(Agent):
         self._ft_phase = 0
         self._ft_timer = 0
 
+        # Pressure control state
+        self._pc_timer = 0
+        self._pc_phase = 0  # 0=NS green,1=all-red→EW,2=EW green,3=all-red→NS
+
+        # Neighbor Pressure control state
+        self._pressure_ns = 0
+        self._pressure_ew = 0
+
 
     # ------------------------------------------------------------------
     # Link discovery
@@ -209,6 +217,10 @@ class IntersectionLightGroup(Agent):
             self.run_fixed_time()
         elif algo == "QUEUE-ACTUATED":
             self.run_queue_actuated()
+        elif algo == "PRESSURE-CONTROL":
+            self.run_pressure_control()
+        elif algo == "NEIGHBOR-ENHANCED-PRESSURE":
+            self.run_neighbor_pressure_control()
 
     def run_fixed_time(self):
         """Two-phase fixed-time controller (N–S vs. E–W) with all-red interlocks."""
@@ -384,5 +396,69 @@ class IntersectionLightGroup(Agent):
             if self._pc_timer >= redbuf:
                 self._pc_phase = desired
                 self._pc_timer = 0
+
+    def run_neighbor_pressure_control(self):
+        """
+        Decentralized pressure‐based control using only immediate neighbors.
+        Each group:
+          1) computes and stores its own (p_ns, p_ew)
+          2) sums its own p’s plus neighbor._pressure_* values
+          3) runs the usual phase‐switch logic
+        """
+
+        # ── 0) init per‐instance state ───────────────────────────────────
+        if not hasattr(self, '_ne_phase'):
+            self._ne_phase = 0  # 0=NS-green,1=all-red→EW,2=EW-green,3=all-red→NS
+            self._ne_timer = 0
+
+        min_green = getattr(Defaults, 'TRAFFIC_LIGHT_MIN_GREEN', 5)
+        redbuf = Defaults.TRAFFIC_LIGHT_ALL_RED_DURATION
+
+        # ── 1) compute & store *local* pressure ─────────────────────────
+        ns_cells, ew_cells = self.get_opposite_traffic_lights().values()
+        local_ns = sum(1 for tl in ns_cells for rb in tl.assigned_road_blocks if rb.occupied)
+        local_ew = sum(1 for tl in ew_cells for rb in tl.assigned_road_blocks if rb.occupied)
+        # pressure in each direction
+        self._pressure_ns = local_ns - local_ew
+        self._pressure_ew = local_ew - local_ns
+
+        # ── 2) aggregate with *neighbors’* pressures ────────────────────
+        total_ns = self._pressure_ns
+        total_ew = self._pressure_ew
+        for neighbor in self.get_neighbor_groups().values():
+            # direct attribute access—no re‐scanning
+            total_ns += getattr(neighbor, '_pressure_ns', 0)
+            total_ew += getattr(neighbor, '_pressure_ew', 0)
+
+        # ── 3) decide desired axis ───────────────────────────────────────
+        desired = 0 if total_ns >= total_ew else 2
+
+        # ── 4) finite‐state timing & phase switching ─────────────────────
+        self._ne_timer += 1
+
+        if self._ne_phase in (0, 2):
+            if self._ne_timer == 1:
+                self._apply_phase(self._ne_phase)
+            if self._ne_timer >= min_green and self._ne_phase != desired:
+                # go into all‐red before the switch
+                self._ne_phase = 1 if self._ne_phase == 0 else 3
+                self._ne_timer = 0
+
+        else:  # all‐red phases 1 or 3
+            if self._ne_timer == 1:
+                self.set_all_stop()
+            if self._ne_timer >= redbuf:
+                # switch to the chosen green
+                self._ne_phase = desired
+                self._ne_timer = 0
+
+    def _apply_phase(self, phase):
+        ns_lights, ew_lights = self.get_opposite_traffic_lights().values()
+        if phase == 0:
+            for tl in ns_lights: tl.set_light_go()
+            for tl in ew_lights: tl.set_light_stop()
+        else:
+            for tl in ew_lights: tl.set_light_go()
+            for tl in ns_lights: tl.set_light_stop()
 
 

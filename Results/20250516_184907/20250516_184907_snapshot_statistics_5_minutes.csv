@@ -1,0 +1,4 @@
+minutes,avg_duration_internal,avg_duration_through,avg_time_per_unit_internal,avg_time_per_unit_through,avg_daily_difference
+5,0.0,0.0,0.0,0.0,0.0
+10,192.0,0.0,7.384615384615385,0.0,0.0
+15,426.0,0.0,6.454545454545454,0.0,0.0

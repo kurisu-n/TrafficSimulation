@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import List, Sequence, TYPE_CHECKING
 
 from mesa import Agent
+
+from Simulation.agents.vehicles.vehicle_base import VehicleAgent
 from Simulation.config import Defaults
 from Simulation.agents.city_structure_entities.cell import CellAgent
 from Simulation.utilities.general import *
@@ -148,55 +150,28 @@ class CityBlock(Agent):
 
     def get_service_road_cell(self, model) -> CellAgent | None:
         """
-        Starting from each BlockEntrance, alternate scanning its adjacent
-        sidewalk cells (that belong to this block) until you find a
-        neighboring road cell of type R1/R2/R3 that isn’t occupied.
-        Returns that road CellAgent, or None if none is available.
+        Return one adjacent road cell off any block-entrance,
+        rejecting cells occupied by parked vehicles.
         """
-        from Simulation.config import Defaults
-        from Simulation.agents.city_structure_entities.cell import CellAgent
-
-        for ent in self._entrances:
-            x0, y0 = ent.get_position()
-            # collect only the sidewalks that were registered for this block
-            sidewalks: list[CellAgent] = []
-            for d, (dx, dy) in Defaults.DIRECTION_VECTORS.items():
-                nx, ny = x0 + dx, y0 + dy
-                if not model.in_bounds(nx, ny):
+        for ent in self._entrances:  # list of BlockEntrance agents :contentReference[oaicite:0]{index=0}:contentReference[oaicite:1]{index=1}
+            x_e, y_e = ent.get_position()
+            # check each cardinal neighbor of the entrance
+            for _, (dx, dy) in Defaults.DIRECTION_VECTORS.items():
+                rx, ry = x_e + dx, y_e + dy
+                if not model.in_bounds(rx, ry):
                     continue
-                nbrs = model.get_cell_contents(nx, ny)
-                if not nbrs:
+                rcands = model.get_cell_contents(rx, ry)
+                if not rcands:
                     continue
-                cell = nbrs[0]
-                if cell.cell_type == "Sidewalk" and cell in self._sidewalks:
-                    sidewalks.append(cell)
-
-            # alternate from start/end of the list
-            i, j, toggle = 0, len(sidewalks) - 1, True
-            while i <= j:
-                sw = sidewalks[i] if toggle else sidewalks[j]
-
-                # look for *one* adjacent road cell off this sidewalk
-                for d2, (dx2, dy2) in Defaults.DIRECTION_VECTORS.items():
-                    rx, ry = sw.get_position()[0] + dx2, sw.get_position()[1] + dy2
-                    if not model.in_bounds(rx, ry):
-                        continue
-                    rcands = model.get_cell_contents(rx, ry)
-                    if not rcands:
-                        continue
-                    road = rcands[0]
-                    # only basic roads (R1/R2/R3) and must be free
-                    if road.cell_type in Defaults.ROADS and not getattr(road, "occupied", False):
+                road = rcands[0]
+                if road.cell_type in Defaults.ROADS:
+                    # reject if any parked VehicleAgent is here
+                    has_parked = any(
+                        isinstance(ag, VehicleAgent) and getattr(ag, "is_parked", False)
+                        for ag in rcands[1:]
+                    )  # :contentReference[oaicite:2]{index=2}:contentReference[oaicite:3]{index=3}
+                    if not has_parked:
                         return road
-
-                # advance pointers & flip
-                if toggle:
-                    i += 1
-                else:
-                    j -= 1
-                toggle = not toggle
-
-        # no valid service road found around any entrance
         return None
 
 

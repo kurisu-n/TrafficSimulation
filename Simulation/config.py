@@ -303,7 +303,7 @@ class Defaults:
     SERVICE_VEHICLE_LOAD_TIME: int = 20
 
     # LIGHT AGENT SETTINGS
-    TRAFFIC_LIGHT_AGENT_ALGORITHM = "QUEUE-ACTUATED"  # "DISABLED", "FIXED-TIME", "QUEUE-ACTUATED"
+    TRAFFIC_LIGHT_AGENT_ALGORITHM = "NEIGHBOR-ENHANCED-PRESSURE"  # "DISABLED", "FIXED-TIME", "QUEUE-ACTUATED"
 
     # Parameters for the FIXED-TIME controller
     TRAFFIC_LIGHT_GREEN_DURATION = 20  # ticks
@@ -323,9 +323,9 @@ class Defaults:
 
     USE_DUMMY_AGENTS: bool = False
     CACHE_CELL_PORTRAYAL: bool = True
-    ENABLE_AGENT_PORTRAYAL: bool = True
-    ENABLE_TRAFFIC:bool = False
-    PATHFINDING_METHOD = "CUDA" # "CUDA", "PYTHON" or "NUMBA"
+    ENABLE_AGENT_PORTRAYAL: bool = False
+    ENABLE_TRAFFIC:bool = True
+    PATHFINDING_METHOD = "NUMBA" # "CUDA", "PYTHON" or "NUMBA"
 
     CACHED_TYPES = [z for z in ZONES if z not in [
         "HighwayEntrance",

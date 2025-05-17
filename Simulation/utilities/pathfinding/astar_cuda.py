@@ -204,28 +204,35 @@ class PathPlanner:
 
     def __init__(self, city_model):
         self.city_model = city_model
-        self.width = city_model.get_width()
+        self.width  = city_model.get_width()
         self.height = city_model.get_height()
-        # Copy static maps to device memory (directions and road layout)
-        self.d_allowed_dirs = cuda.to_device(city_model.allowed_dirs_map.astype(np.uint8))
-        self.d_is_road = cuda.to_device(city_model.is_road_map.astype(np.int8))
-        # Prepare device arrays for dynamic maps (occupancy and stop), will update each tick
-        self.d_occupancy = cuda.to_device(city_model.occupancy_map.astype(np.int8))
-        self.d_stop = cuda.to_device(city_model.stop_map.astype(np.int8))
-        # Initialize a list for pending pathfinding requests (for batched solving)
-        self._pending_requests = []
 
-        # Pre-allocate device arrays for batched pathfinding (max queries per batch can be adjusted)
-        # For simplicity, we'll allocate based on a reasonable upper bound of queries to handle simultaneously.
-        self.max_batch_size = 1024  # maximum number of concurrent path queries
+        # Copy static maps to device memory
+        self.d_allowed_dirs = cuda.to_device(city_model.allowed_dirs_map.astype(np.uint8))
+        self.d_is_road      = cuda.to_device(city_model.is_road_map.astype(np.int8))
+
+        # Prepare device arrays for dynamic maps
+        self.d_occupancy = cuda.to_device(city_model.occupancy_map.astype(np.int8))
+        self.d_stop      = cuda.to_device(city_model.stop_map.astype(np.int8))
+
+        # Pre-allocate working buffers for batched solve_all
         max_cells = self.width * self.height
-        # Flattened arrays for cost, predecessor, steps (size = max_batch_size * max_cells)
-        self.d_dist = cuda.device_array(shape=(self.max_batch_size * max_cells,), dtype=np.int32)
-        self.d_came_from = cuda.device_array(shape=(self.max_batch_size * max_cells,), dtype=np.int32)
-        self.d_steps = cuda.device_array(shape=(self.max_batch_size * max_cells,), dtype=np.int32)
-        # Output path storage: to accommodate worst-case path length, allocate max_cells entries per query
-        self.d_out_paths = cuda.device_array(shape=(self.max_batch_size, max_cells, 2), dtype=np.int32)
-        self.d_out_lengths = cuda.device_array(shape=(self.max_batch_size,), dtype=np.int32)
+        self.max_batch_size = 1024
+
+        self.d_dist      = cuda.device_array(self.max_batch_size * max_cells, dtype=np.int32)
+        self.d_came_from = cuda.device_array(self.max_batch_size * max_cells, dtype=np.int32)
+        self.d_steps     = cuda.device_array(self.max_batch_size * max_cells, dtype=np.int32)
+
+        self.d_out_paths   = cuda.device_array((self.max_batch_size, max_cells, 2), dtype=np.int32)
+        self.d_out_lengths = cuda.device_array(self.max_batch_size, dtype=np.int32)
+
+        # **Pre-allocate single-element buffers for find_path()**
+        self.d_single_sx = cuda.device_array(1, dtype=np.int32)
+        self.d_single_sy = cuda.device_array(1, dtype=np.int32)
+        self.d_single_gx = cuda.device_array(1, dtype=np.int32)
+        self.d_single_gy = cuda.device_array(1, dtype=np.int32)
+
+        self._pending_requests = []
 
     def update_dynamic_maps(self):
         """Refresh dynamic occupancy and stop maps on the GPU (call each tick before pathfinding)."""
@@ -298,24 +305,31 @@ class PathPlanner:
         d_goal_xs = cuda.to_device(goal_xs)
         d_goal_ys = cuda.to_device(goal_ys)
         # Reset output length array
-        self.d_out_lengths.copy_to_device(np.zeros(num_queries, dtype=np.int32))
+        zero_lengths = np.zeros(num_queries, dtype=np.int32)
 
-        # Launch kernel: one thread per query
+        self.d_out_lengths[:num_queries].copy_to_device(zero_lengths)
+        awareness_range = Defaults.VEHICLE_AWARENESS_RANGE
         threads_per_block = 64
-        blocks_per_grid = (num_queries + threads_per_block - 1) // threads_per_block
+        blocks_per_grid   = (num_queries + threads_per_block - 1) // threads_per_block
+
+        # Launch kernel with blocks_per_grid, threads_per_block
         astar_kernel[blocks_per_grid, threads_per_block](
             self.width, self.height,
             d_start_xs, d_start_ys, d_goal_xs, d_goal_ys,
             self.d_occupancy, self.d_stop, self.d_is_road, self.d_allowed_dirs,
             self.d_dist, self.d_came_from, self.d_steps,
             self.d_out_paths, self.d_out_lengths,
-            soft_flag, ignore_flow_flag, respect_fov_flag, max_steps_val
+            respect_fov_flag, awareness_range,
+            soft_flag, ignore_flow_flag, max_steps_val
         )
-        # Retrieve results from device
-        out_lengths = np.empty(num_queries, dtype=np.int32)
-        self.d_out_lengths.copy_to_host(out_lengths)
-        out_paths = np.empty((num_queries, self.width * self.height, 2), dtype=np.int32)
-        self.d_out_paths.copy_to_host(out_paths)
+
+        # Retrieve results for only num_queries
+        # Device→host requires matching shape, so read the slice:
+        host_lengths_full = self.d_out_lengths.copy_to_host()  # shape (max_batch_size,)
+        out_lengths = host_lengths_full[:num_queries]
+
+        host_paths_full = self.d_out_paths.copy_to_host()  # shape (max_batch_size, max_cells, 2)
+        out_paths = host_paths_full[:num_queries]
 
         # Assign paths to vehicles
         for i, req in enumerate(self._pending_requests[:num_queries]):
@@ -333,36 +347,42 @@ class PathPlanner:
         self._pending_requests = self._pending_requests[num_queries:]
         # If any leftover requests beyond max_batch_size, they will be processed in subsequent calls (or adjust max_batch_size).
 
-    def find_path(self, start_pos: tuple[int, int], goal_pos: tuple[int, int],
-                  soft_obstacles=False, ignore_flow=False, respect_awareness=False, maximum_steps=0x7FFFFFFF) -> list[
-        tuple[int, int]]:
+    def find_path(
+            self,
+            start_pos: tuple[int, int],
+            goal_pos: tuple[int, int],
+            *,
+            soft_obstacles: bool = False,
+            ignore_flow: bool = False,
+            respect_awareness: bool = False,
+            maximum_steps: int = 0x7FFFFFFF
+    ) -> list[tuple[int, int]]:
         """
         Compute a single path from start_pos to goal_pos on the GPU synchronously.
-        Returns a list of (x,y) coordinates from the cell after start to the goal (inclusive), or an empty list if no path found.
+        Returns a list of (x,y) coords from the cell after start to the goal (inclusive),
+        or an empty list if no path is found.
         """
+        # Unpack endpoints
         sx, sy = start_pos
         gx, gy = goal_pos
-        # Prepare single-query data
-        start_x = np.array([sx], dtype=np.int32)
-        start_y = np.array([sy], dtype=np.int32)
-        goal_x = np.array([gx], dtype=np.int32)
-        goal_y = np.array([gy], dtype=np.int32)
-        d_sx = cuda.to_device(start_x)
-        d_sy = cuda.to_device(start_y)
-        d_gx = cuda.to_device(goal_x)
-        d_gy = cuda.to_device(goal_y)
-        # Reset/initialize working arrays for one query
-        # (Reuse self.d_dist, etc., for the first segment of the array)
-        max_cells = self.width * self.height
-        self.d_out_lengths.copy_to_device(np.array([0], dtype=np.int32))
 
-        # 🚩 **Explicit call matching the kernel signature** 🚩
+        # Copy into pre-allocated single-element device arrays
+        self.d_single_sx.copy_to_device(np.array([sx], dtype=np.int32))
+        self.d_single_sy.copy_to_device(np.array([sy], dtype=np.int32))
+        self.d_single_gx.copy_to_device(np.array([gx], dtype=np.int32))
+        self.d_single_gy.copy_to_device(np.array([gy], dtype=np.int32))
+
+        # Reset just the first entry of the output-length array
+        self.d_out_lengths[0:1].copy_to_device(np.zeros(1, dtype=np.int32))
+
+        # Launch the CUDA kernel with 1 block and 1 thread
         awareness_range = Defaults.VEHICLE_AWARENESS_RANGE
         astar_kernel[1, 1](
-            # Core grid dims
+            # Grid dims
             self.width, self.height,
-            # Start / Goal
-            d_sx, d_sy, d_gx, d_gy,
+            # Start / goal coords
+            self.d_single_sx, self.d_single_sy,
+            self.d_single_gx, self.d_single_gy,
             # Maps
             self.d_occupancy, self.d_stop,
             self.d_is_road, self.d_allowed_dirs,
@@ -370,21 +390,22 @@ class PathPlanner:
             self.d_dist, self.d_came_from, self.d_steps,
             # Outputs
             self.d_out_paths, self.d_out_lengths,
-            # Flags & parameters (in exact kernel order):
-            respect_awareness,          # respect FOV?
-            awareness_range,            # how wide is FOV?
-            soft_obstacles,             # soft vs hard obstacles
-            ignore_flow,                # allow contraflow?
-            maximum_steps               # step‐limit
+            # Flags & parameters
+            respect_awareness,  # bool: apply FOV checks?
+            awareness_range,  # int: how far FOV extends
+            soft_obstacles,  # bool: soft vs. hard obstacles
+            ignore_flow,  # bool: allow contraflow?
+            maximum_steps  # int: max A* steps
         )
-        # Get result
-        out_len = np.zeros(1, dtype=np.int32)
-        self.d_out_lengths.copy_to_host(out_len)
-        length = int(out_len[0])
+
+        # Copy back the full lengths buffer and read the first entry
+        host_lengths = self.d_out_lengths.copy_to_host()
+        length = int(host_lengths[0])
         if length <= 0:
-            return []  # no path
-        out_path = np.zeros((1, max_cells, 2), dtype=np.int32)
-        self.d_out_paths.copy_to_host(out_path)
-        # Extract the coordinates from the output array
-        coords = [tuple(out_path[0, j]) for j in range(length)]
+            return []
+
+        # Copy back the full paths buffer, then extract the first query’s result
+        host_paths = self.d_out_paths.copy_to_host()
+        coords = [tuple(host_paths[0, j]) for j in range(length)]
+
         return coords
