@@ -90,14 +90,28 @@ class DynamicTrafficAgent(Agent):
         self.total_duration_internal = 0.0
         self.count_completed_internal = 0
         self.total_distance_internal = 0.0
+        self.count_errored_internal = 0
 
         self.total_duration_through = 0.0
         self.count_completed_through = 0
         self.total_distance_through = 0.0
+        self.count_errored_through = 0
 
         self.daily_finished_internal = 0
         self.daily_finished_through = 0
         self.daily_difference_history: list[int] = []
+
+        self.live_internal = 0
+        self.live_through  = 0
+        self.live_service_food  = 0
+        self.live_service_waste = 0
+
+        self.collisions   = 0
+        self.malfunctions = 0
+        self.parked       = 0
+        self.overtaking   = 0
+        self.stuck        = 0
+        self.in_stuck_detour     = 0
 
         self.cached_stats: dict[str, int | float | None] = {}
 
@@ -113,6 +127,8 @@ class DynamicTrafficAgent(Agent):
             self._initialize_individual_saving()
 
         self._generate_day(0)
+
+
 
     # ════════════════════════════════════════════════════════════════
     #  Public step
@@ -183,6 +199,24 @@ class DynamicTrafficAgent(Agent):
     @property
     def day(self) -> int:
         return self.current_day
+
+    # —— elapsed wall‑clock helpers ——
+    @property
+    def elapsed_seconds(self) -> int:
+        return int(self.elapsed)
+
+    @property
+    def elapsed_minutes(self) -> int:
+        return int(self.elapsed // 60)
+
+    @property
+    def elapsed_hours(self) -> int:
+        return int(self.elapsed // 3_600)
+
+    @property
+    def elapsed_days(self) -> int:
+        return int(self.elapsed // 86_400)
+
 
     # convenience tuple
     def now_dhms(self) -> tuple[int, int, int, int]:
@@ -352,8 +386,10 @@ class DynamicTrafficAgent(Agent):
             # increment before spawning
             if trip.kind == "internal":
                 self.created_internal += 1
+                self.live_internal    += 1
             else:
                 self.created_through += 1
+                self.live_through += 1
 
             vid = f"V_{int(trip.depart_secs):06d}_{random.randint(0, 9999):04d}"
             VehicleAgent(
@@ -368,10 +404,12 @@ class DynamicTrafficAgent(Agent):
         # Service vehicles
         if trip.kind == "service_food":
             self.created_service_food += 1
+            self.live_service_food    += 1
             pool = self.sv_food_ids
             sv_type = "Food"
         else:  # service_waste
             self.created_service_waste += 1
+            self.live_service_waste    += 1
             pool = self.sv_waste_ids
             sv_type = "Waste"
 
@@ -515,56 +553,19 @@ class DynamicTrafficAgent(Agent):
         )
 
         if Defaults.SHOW_TRAFFIC_STATISTICS:
-            from Simulation.agents.vehicles.vehicle_base import VehicleAgent
-            from Simulation.agents.vehicles.vehicle_service import ServiceVehicleAgent
-
-            # Init counters
-            count_live_internal = 0
-            count_live_through = 0
-            count_live_food = 0
-            count_live_waste = 0
-
-            count_collision = 0
-            count_malfunction = 0
-            count_parked = 0
-            count_overtaking = 0
-
-            # Single-pass agent scan
-            for ag in self.model.schedule.agents:
-                if isinstance(ag, VehicleAgent):
-                    if ag.population_type == "internal":
-                        count_live_internal += 1
-                    elif ag.population_type == "through":
-                        count_live_through += 1
-
-                    if ag.is_in_collision:
-                        count_collision += 1
-                    if ag.is_in_malfunction:
-                        count_malfunction += 1
-                    if ag.is_parked:
-                        count_parked += 1
-                    if ag.is_overtaking:
-                        count_overtaking += 1
-
-                elif isinstance(ag, ServiceVehicleAgent):
-                    if ag.service_type == "Food":
-                        count_live_food += 1
-                    elif ag.service_type == "Waste":
-                        count_live_waste += 1
-
             self.cached_stats["count_completed_internal"] = self.count_completed_internal
 
-            # Store live counts
-            self.cached_stats["live_internal"] = count_live_internal
-            self.cached_stats["live_through"] = count_live_through
-            self.cached_stats["live_service_food"] = count_live_food
-            self.cached_stats["live_service_waste"] = count_live_waste
+            self.cached_stats["live_internal"] = self.live_internal
+            self.cached_stats["live_through"] = self.live_through
+            self.cached_stats["live_service_food"] = self.live_service_food
+            self.cached_stats["live_service_waste"] = self.live_service_waste
 
-            # Store status counts
-            self.cached_stats["collisions"] = count_collision
-            self.cached_stats["malfunctions"] = count_malfunction
-            self.cached_stats["parked"] = count_parked
-            self.cached_stats["overtaking"] = count_overtaking
+            self.cached_stats["collisions"] = self.collisions
+            self.cached_stats["malfunctions"] = self.malfunctions
+            self.cached_stats["parked"] = self.parked
+            self.cached_stats["overtaking"] = self.overtaking
+            self.cached_stats["stuck"] = self.stuck
+            self.cached_stats["in_stuck_detour"] = self.in_stuck_detour
 
             # Daily trip statistics (direct access — no method call overhead)
             for kind in ("internal", "through", "service_food", "service_waste"):
@@ -583,4 +584,5 @@ class DynamicTrafficAgent(Agent):
                 self.cached_stats[f"remaining_{kind}"] = remaining
                 self.cached_stats[f"percentage_created_{kind}"] = percentage
                 self.cached_stats[f"eta_{kind}"] = eta
+
 

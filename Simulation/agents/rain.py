@@ -96,7 +96,7 @@ class RainManager(Agent):
         self._prev_raining: Set[CellAgent] = set()
 
         h, w = city_model.get_height(), city_model.get_width()
-        self.rain_map = np.zeros((h, w), dtype=np.int8)
+
 
     def add_random_rain(self):
         """Spawn one RainAgent just inside a random edge, heading toward a corner."""
@@ -156,7 +156,8 @@ class RainManager(Agent):
     def step(self):
         # 1) clear rain flag on only previously raining cells
         for cell in self._prev_raining:
-            cell.is_raining = False
+            x, y = cell.get_position()
+            self.city_model.rain_map[y, x] = 0
 
         # 2) decrement cooldown
         if self.cooldown > 0:
@@ -177,8 +178,7 @@ class RainManager(Agent):
 
         for cell in new_raining:
             x, y = cell.get_position()
-            cell.is_raining = True
-            self.rain_map[y, x] = 1
+            self.city_model.rain_map[y, x] = 1
 
         # 5) remember for next tick
         self._prev_raining = new_raining

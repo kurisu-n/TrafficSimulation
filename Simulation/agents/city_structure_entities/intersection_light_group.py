@@ -1,5 +1,5 @@
 import random
-from typing import Dict, List, Set, cast, TYPE_CHECKING
+from typing import Dict, List, Set, cast, TYPE_CHECKING, Optional
 from mesa import Agent
 from Simulation.config import Defaults
 from Simulation.utilities.general import *
@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from Simulation.agents.city_structure_entities.cell import CellAgent
 
 if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM == "NEIGHBOR_RL":
-    from Simulation.utilities.light_group_managment.reinforcement_learning import make_policy_net, run_neighbor_rl
+    from Simulation.utilities.light_group_managment.reinforcement_learning import make_policy_net, run_rl_control
     import tensorflow as tf
 
 
@@ -20,42 +20,56 @@ class IntersectionLightGroup(Agent):
         super().__init__(str_to_unique_int(custom_id), model)
         self.id = custom_id
         self.traffic_lights = traffic_lights
+        self.intersection_cells: List[CellAgent] = []
         self.neighbor_groups: Dict[str, "IntersectionLightGroup"] | None = None
         self.intermediate_groups: Set["IntersectionLightGroup"] | None = None
         self.opposite_pairs: dict[str, list] | None = None
 
         self.city_model = cast("CityModel", self.model)
 
-        # Fixed-time state
-        self.current_phase: int = 0  # 0 = N–S, 1 = E–W
-        self.timer: int = 0
-        self.green_duration: int = 20
-        self.yellow_duration: int = 3
-        self.all_red_duration: int = 2
+        # --- Phase Change parameters (shared) ---
+        self.current_phase: Optional[int] = None  # 0 = N–S, 1 = E–W
+        self.pending_phase: Optional[int] = None
+        self.transition_timer: int = 0
+        self.clearance_timer: int = 0
 
-        # Queue-actuated state
-        self._qa_phase = 0  # 0=NS green,1=all-red→EW,2=EW green,3=all-red→NS
-        self._qa_timer = 0
-        self._gap_timer = 0
-        self._last_arrival = 0
-        self._ft_phase = 0
-        self._ft_timer = 0
+        # --- Queue-actuated parameters ---
+        self._ft_phase: int = 0  # 0 = NS green, 1 = EW green
+        self.fixed_time_timer: int = 0
+        self.green_duration: int = Defaults.TRAFFIC_LIGHT_GREEN_DURATION
 
-        # Pressure control state
-        self._pc_timer = 0
-        self._pc_phase = 0  # 0=NS green,1=all-red→EW,2=EW green,3=all-red→NS
+        # --- Queue-actuated parameters ---
+        self.queue_timer: int = 0
+        self.gap_timer: int = 0
+        self.last_arrival: int = 0
 
-        # Neighbor Pressure control state
-        self._pressure_ns = 0
-        self._pressure_ew = 0
+        # --- Pressure-based parameters ---
+        self.ns_pressure = 0
+        self.ew_pressure = 0
 
-        # RL-specific fields
-        if Defaults.PATHFINDING_METHOD == "NEIGHBOR_RL":
-            self.rl_policy = make_policy_net(input_dim=7)
-            self.optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3)
-            self.memory = []  # stores (state, action, reward, next_state)
-            self._rl_phase = 0   # 0=NS-green, 2=EW-green
-            self._rl_timer = 0
+        # --- Neighbor-pressure trackers ---
+        self._ne_timer: int = 0
+        self._ne_last_request: Optional[int] = None
+
+        # --- Neighbor green-wave trackers ---
+        self._nc_timer: int = 0
+        self._nc_gap_timer: int = 0
+        self._nc_last_arrival: int = 0
+
+
+        if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM == "NEIGHBOR_RL":
+            input_dim = 7  # [p_ns,p_ew,avg_n_ns,avg_n_ew] + phase bit + t_norm
+            hidden = getattr(Defaults, 'RL_POLICY_HIDDEN', 16)
+            lr = getattr(Defaults, 'RL_LEARNING_RATE', 1e-3)
+            self.rl_policy = make_policy_net(input_dim, hidden)
+            self.optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
+            self.memory: list = []
+            # RL phase pointer & timer
+            self._rl_phase: int = 0
+            self._rl_timer: int = 0
+
+        if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM != "DISABLED":
+            self.apply_phase(self._ft_phase)
 
 
     # ------------------------------------------------------------------
@@ -171,6 +185,14 @@ class IntersectionLightGroup(Agent):
     # Convenience wrappers
     # ------------------------------------------------------------------
 
+    def is_intersection_occupied(self) -> bool:
+        """Return True if any of this group’s intersection cells currently has a vehicle."""
+        occ = self.city_model.occupancy_map
+        return any(
+            occ[cell.position[1], cell.position[0]]
+            for cell in self.intersection_cells
+        )
+
     def get_neighbor_groups(self):
         if self.neighbor_groups is None or self.neighbor_groups == []:
             self.populate_links()
@@ -224,256 +246,282 @@ class IntersectionLightGroup(Agent):
             g.set_all_stop()
 
     # ------------------------------------------------------------------
+
+    def _execute_phase_change(self):
+        """
+        Execute any pending phase change with yellow/all-red transition
+        and the "wait until clear" hard rule. Called at end of each step.
+        """
+        if self.pending_phase is None:
+            return
+
+        if Defaults.TRAFFIC_LIGHT_TRANSITION_DURATION_ENABLED and self.transition_timer > 0:
+            self.transition_timer -= 1
+            self.set_all_stop()
+            return
+
+        if Defaults.TRAFFIC_LIGHT_TRANSITION_CLEARANCE_ENABLED and self.is_intersection_occupied() and self.clearance_timer > 0:
+            self.clearance_timer -= 1
+            self.set_all_stop()
+            return
+
+        if Defaults.TRAFFIC_LIGHT_TRANSITION_DURATION_ENABLED:
+            self.transition_timer = Defaults.TRAFFIC_LIGHT_YELLOW_DURATION + Defaults.TRAFFIC_LIGHT_ALL_RED_DURATION
+
+        if Defaults.TRAFFIC_LIGHT_TRANSITION_CLEARANCE_ENABLED and self.is_intersection_occupied():
+            self.clearance_timer = Defaults.TRAFFIC_LIGHT_CLEARANCE_MAX_DURATION
+
+        # Actually set green for the committed phase
+        ns_lights, ew_lights = self.get_opposite_traffic_lights().values()
+        if self.pending_phase == 0:
+            for tl in ns_lights:
+                tl.set_light_go()
+            for tl in ew_lights:
+                tl.set_light_stop()
+        else:
+            for tl in ew_lights:
+                tl.set_light_go()
+            for tl in ns_lights:
+                tl.set_light_stop()
+
+        # Intersection clear and transition done: commit the phase
+        new_phase = self.pending_phase
+        self.pending_phase = None
+        self.current_phase = new_phase
+
+    def apply_phase(self, phase: int):
+        """
+        Called by control algorithms to *request* a phase change.
+        Only registers the desired phase; execution deferred until end of step.
+        """
+        if phase == self.current_phase or phase == self.pending_phase:
+            return
+        self.pending_phase = phase
+
+    # ------------------------------------------------------------------
     def step(self):
-        algo = Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM
-        if algo == "FIXED_TIME":
-            self.run_fixed_time()
-        elif algo == "QUEUE_ACTUATED":
-            self.run_queue_actuated()
-        elif algo == "PRESSURE_CONTROL":
-            self.run_pressure_control()
-        elif algo == "NEIGHBOR_ENHANCED_PRESSURE":
-            self.run_neighbor_pressure_control()
-        elif algo == "NEIGHBOR_RL":
-            run_neighbor_rl(self)
+
+        if self.pending_phase is None:
+            algo = Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM
+
+            if algo == "FIXED_TIME":
+                self.run_fixed_time()
+            elif algo == "QUEUE_ACTUATED":
+                self.run_queue_actuated()
+            elif algo == "PRESSURE_CONTROL":
+                self.run_pressure_control()
+            elif algo == "NEIGHBOR_PRESSURE_CONTROL":
+                self.run_neighbor_pressure_control()
+            elif algo == "NEIGHBOR_GREEN_WAVE":
+                self.run_neighbor_green_wave()
+            elif algo == "NEIGHBOR_RL":
+                run_rl_control(self)
+
+
+        self._execute_phase_change()
+
+    # ------------------------------------------------------------------
 
     def run_fixed_time(self):
-        """Two-phase fixed-time controller (N–S vs. E–W) with all-red interlocks."""
-        # pull parameters
-        green  = Defaults.TRAFFIC_LIGHT_GREEN_DURATION
-        yellow = Defaults.TRAFFIC_LIGHT_YELLOW_DURATION
-        redbuf = Defaults.TRAFFIC_LIGHT_ALL_RED_DURATION
+        """
+        Two-phase fixed-time controller (N–S vs. E–W) using apply_phase for transitions.
+        """
+        # Advance timer
+        self.fixed_time_timer += 1
 
-        # initialize per-instance state on first call
-        if not hasattr(self, "_ft_phase"):
-            self._ft_phase = 0   # 0 = NS green, 1 = all-red, 2 = EW green, 3 = all-red
-            self._ft_timer = 0
+        # On first tick of this phase, request green
+        if self.fixed_time_timer == 1:
+            self.apply_phase(self._ft_phase)
 
-        self._ft_timer += 1
-        ns_lights, ew_lights = self.get_opposite_traffic_lights().values()
+        # After full green duration, toggle phase and reset timer
+        if self.fixed_time_timer >= self.green_duration:
+            self._ft_phase = 1 - self._ft_phase  # Toggle between 0↔1
+            self.fixed_time_timer = 0
 
-        # Phase 0: NS green
-        if self._ft_phase == 0:
-            if self._ft_timer == 1:
-                for tl in ns_lights: tl.set_light_go()
-                for tl in ew_lights: tl.set_light_stop()
-            if self._ft_timer >= green - yellow:
-                self._ft_phase = 1
-                self._ft_timer = 0
-
-        # Phase 1: all-red before switching to EW
-        elif self._ft_phase == 1:
-            if self._ft_timer == 1:
-                self.set_all_stop()
-            if self._ft_timer >= redbuf:
-                self._ft_phase = 2
-                self._ft_timer = 0
-
-        # Phase 2: EW green
-        elif self._ft_phase == 2:
-            if self._ft_timer == 1:
-                for tl in ew_lights: tl.set_light_go()
-                for tl in ns_lights: tl.set_light_stop()
-            if self._ft_timer >= green - yellow:
-                self._ft_phase = 3
-                self._ft_timer = 0
-
-        # Phase 3: all-red before switching back to NS
-        elif self._ft_phase == 3:
-            if self._ft_timer == 1:
-                self.set_all_stop()
-            if self._ft_timer >= redbuf:
-                self._ft_phase = 0
-                self._ft_timer = 0
 
     def run_queue_actuated(self):
         """
-        Queue-actuated controller:
-          - MIN_GREEN: minimum green interval before switching
-          - MAX_GREEN: cap to prevent starvation
-          - GAP: no-arrival gap-out interval after MIN_GREEN
+        Queue-actuated: stays green at least min_green,
+        gaps out after no arrivals for gap ticks,
+        forced switch at max_green,
+        uses global apply_phase for transitions.
         """
-        # Parameters (fallbacks if not in Defaults)
-        min_green = getattr(Defaults, 'TRAFFIC_LIGHT_MIN_GREEN', 5)
-        max_green = getattr(Defaults, 'TRAFFIC_LIGHT_MAX_GREEN', 30)
-        gap      = getattr(Defaults, 'TRAFFIC_LIGHT_GAP', 3)
-        redbuf   = Defaults.TRAFFIC_LIGHT_ALL_RED_DURATION
+        self.queue_timer += 1
 
-        # Advance timers
-        self._qa_timer += 1
-
-        # Get queues: count occupied road blocks
+        # count vehicles on N–S vs E–W approaches
         ns_cells, ew_cells = self.get_opposite_traffic_lights().values()
+        occ = self.city_model.occupancy_map
         ns_queue = sum(
             1
             for tl in ns_cells
-            for rb in tl.assigned_road_blocks
-            if rb.occupied
+            for x, y in (rb.position for rb in tl.assigned_road_blocks)
+            if occ[y, x]
         )
         ew_queue = sum(
             1
             for tl in ew_cells
-            for rb in tl.assigned_road_blocks
-            if rb.occupied
+            for x, y in (rb.position for rb in tl.assigned_road_blocks)
+            if occ[y, x]
         )
 
-        # Determine current vs opposite queues
-        if self._qa_phase == 0:
+        # determine current vs opposite queue based on actual phase
+        if self.current_phase == 0:
             current_q, opp_q = ns_queue, ew_queue
-        elif self._qa_phase == 2:
-            current_q, opp_q = ew_queue, ns_queue
         else:
-            current_q = opp_q = None
+            current_q, opp_q = ew_queue, ns_queue
 
-        # Green phases
-        if self._qa_phase in (0, 2):
-            # On phase start, set lights
-            if self._qa_timer == 1:
-                lights_on  = ns_cells if self._qa_phase == 0 else ew_cells
-                lights_off = ew_cells if self._qa_phase == 0 else ns_cells
-                for tl in lights_on:
-                    tl.set_light_go()
-                for tl in lights_off:
-                    tl.set_light_stop()
-                self._last_arrival = current_q
-                self._gap_timer = 0
+        # on start of new green cycle, init arrival tracking
+        if self.queue_timer == 1:
+            self.last_arrival = current_q
+            self.gap_timer = 0
 
-            # Update gap timer on arrivals
-            if current_q > self._last_arrival:
-                self._last_arrival = current_q
-                self._gap_timer = 0
-            else:
-                self._gap_timer += 1
+        # update gap timer
+        if current_q > self.last_arrival:
+            self.last_arrival = current_q
+            self.gap_timer = 0
+        else:
+            self.gap_timer += 1
 
-            # Check for switch conditions
-            if (
-                self._qa_timer >= min_green and (
-                    self._gap_timer >= gap or
-                    self._qa_timer >= max_green or
-                    (opp_q > current_q and current_q == 0)
-                )
-            ):
-                # move to all-red before next green
-                self._qa_phase = 1 if self._qa_phase == 0 else 3
-                self._qa_timer = 0
-
-        # All-red before switching
-        elif self._qa_phase in (1, 3):
-            if self._qa_timer == 1:
-                self.set_all_stop()
-            if self._qa_timer >= redbuf:
-                # Next green phase
-                self._qa_phase = 2 if self._qa_phase == 1 else 0
-                self._qa_timer = 0
+        # decide to switch after at least min_green
+        if (
+            self.queue_timer >= Defaults.TRAFFIC_LIGHT_QUEUE_ACTUATED_MIN_GREEN and (
+                self.gap_timer >= Defaults.TRAFFIC_LIGHT_QUEUE_ACTUATED_GAP or
+                self.queue_timer >= Defaults.TRAFFIC_LIGHT_QUEUE_ACTUATED_MAX_GREEN or
+                (opp_q > current_q == 0)
+            )
+        ):
+            next_phase = 1 - self.current_phase
+            self.apply_phase(next_phase)
+            self.queue_timer = 0
 
     def run_pressure_control(self):
-        min_green = getattr(Defaults, 'TRAFFIC_LIGHT_MIN_GREEN', 5)
-        max_green = getattr(Defaults, 'TRAFFIC_LIGHT_MAX_GREEN', 60)
-        redbuf    = Defaults.TRAFFIC_LIGHT_ALL_RED_DURATION
-
-        self._pc_timer += 1
+        """
+        Pressure-based control: compares local vs neighbor pressure
+        and requests the phase with higher demand.
+        """
+        occ_map = self.city_model.occupancy_map
         ns_cells, ew_cells = self.get_opposite_traffic_lights().values()
+        local_ns = sum(
+            1 for tl in ns_cells
+            for x, y in (rb.position for rb in tl.assigned_road_blocks)
+            if occ_map[y, x]
+        )
+        local_ew = sum(
+            1 for tl in ew_cells
+            for x, y in (rb.position for rb in tl.assigned_road_blocks)
+            if occ_map[y, x]
+        )
 
-        # Local pressures
-        local_ns = sum(1 for tl in ns_cells for rb in tl.assigned_road_blocks if rb.occupied)
-        local_ew = sum(1 for tl in ew_cells for rb in tl.assigned_road_blocks if rb.occupied)
-        p_ns = local_ns - local_ew
-        p_ew = local_ew - local_ns
+        # compute self pressure
+        self.ns_pressure = local_ns - local_ew
+        self.ew_pressure = local_ew - local_ns
 
-        # Sum neighbor pressure
-        total_ns, total_ew = p_ns, p_ew
-        for neighbor in self.get_neighbor_groups():
-            n_ns, n_ew = 0, 0
-            n_cells_ns, n_cells_ew = neighbor.get_opposite_traffic_lights().values()
-            n_ns = sum(1 for tl in n_cells_ns for rb in tl.assigned_road_blocks if rb.occupied)
-            n_ew = sum(1 for tl in n_cells_ew for rb in tl.assigned_road_blocks if rb.occupied)
-            total_ns += (n_ns - n_ew)
-            total_ew += (n_ew - n_ns)
+        # include neighbor pressures
+        sum_ns = sum_ew = count = 0
+        for neighbor in self.get_neighbor_groups().values():
+            n_ns_cells, n_ew_cells = neighbor.get_opposite_traffic_lights().values()
+            n_ns = sum(
+                1 for tl in n_ns_cells
+                for x, y in (rb.position for rb in tl.assigned_road_blocks)
+                if occ_map[y, x]
+            )
+            n_ew = sum(
+                1 for tl in n_ew_cells
+                for x, y in (rb.position for rb in tl.assigned_road_blocks)
+                if occ_map[y, x]
+            )
+            sum_ns += (n_ns - n_ew)
+            sum_ew += (n_ew - n_ns)
+            count += 1
+        if count > 0:
+            self.ns_pressure -= (sum_ns / count)
+            self.ew_pressure -= (sum_ew / count)
 
-        # Decide desired
-        desired = 0 if total_ns >= total_ew else 2
-
-        # Green execution
-        if self._pc_phase in (0, 2):
-            if self._pc_timer == 1:
-                lights_on  = ns_cells if self._pc_phase == 0 else ew_cells
-                lights_off = ew_cells if self._pc_phase == 0 else ns_cells
-                for tl in lights_on: tl.set_light_go()
-                for tl in lights_off: tl.set_light_stop()
-            # Transition
-            if self._pc_timer >= min_green and self._pc_phase != desired:
-                self._pc_phase = 1 if self._pc_phase == 0 else 3
-                self._pc_timer = 0
-
-        # All-red buffer
-        elif self._pc_phase in (1, 3):
-            if self._pc_timer == 1: self.set_all_stop()
-            if self._pc_timer >= redbuf:
-                self._pc_phase = desired
-                self._pc_timer = 0
+        # decide phase: 0 = N–S, 1 = E–W
+        new_phase = 0 if self.ns_pressure >= self.ew_pressure else 1
+        if new_phase != self.current_phase:
+            self.apply_phase(new_phase)
 
     def run_neighbor_pressure_control(self):
         """
-        Decentralized pressure‐based control using only immediate neighbors.
-        Each group:
-          1) computes and stores its own (p_ns, p_ew)
-          2) sums its own p’s plus neighbor._pressure_* values
-          3) runs the usual phase‐switch logic
+        Decentralized neighbor-pressure control using apply_phase()
+        after enforcing a minimum green.
         """
-
-        # ── 0) init per‐instance state ───────────────────────────────────
-        if not hasattr(self, '_ne_phase'):
-            self._ne_phase = 0  # 0=NS-green,1=all-red→EW,2=EW-green,3=all-red→NS
+        if not hasattr(self, '_ne_timer'):
+            self._ne_timer = 0
+            self._ne_last_request = None
+        # local pressure
+        occ = self.city_model.occupancy_map
+        ns_cells, ew_cells = self.get_opposite_traffic_lights().values()
+        local_ns = sum(1 for tl in ns_cells for x,y in (rb.position for rb in tl.assigned_road_blocks) if occ[y,x])
+        local_ew = sum(1 for tl in ew_cells for x,y in (rb.position for rb in tl.assigned_road_blocks) if occ[y,x])
+        self.ns_pressure = local_ns - local_ew
+        self.ew_pressure = local_ew - local_ns
+        total_ns = self.ns_pressure
+        total_ew = self.ew_pressure
+        for nb in self.get_neighbor_groups().values():
+            total_ns += getattr(nb, 'ns_pressure', 0)
+            total_ew += getattr(nb, 'ew_pressure', 0)
+        desired = 0 if total_ns >= total_ew else 1
+        self._ne_timer += 1
+        if self._ne_last_request is None:
+            self.apply_phase(self.current_phase)
+            self._ne_last_request = self.current_phase
+        elif self._ne_timer >= Defaults.TRAFFIC_LIGHT_PRESSURE_CONTROL_MIN_GREEN and desired != self.current_phase:
+            self.apply_phase(desired)
+            self._ne_last_request = desired
             self._ne_timer = 0
 
-        min_green = getattr(Defaults, 'TRAFFIC_LIGHT_MIN_GREEN', 5)
-        redbuf = Defaults.TRAFFIC_LIGHT_ALL_RED_DURATION
-
-        # ── 1) compute & store *local* pressure ─────────────────────────
+    def run_neighbor_green_wave(self):
+        """
+        Decentralized green-wave control aligned with neighbor phases,
+        using gap, max, starvation logic and apply_phase().
+        """
+        # init timers
+        if not hasattr(self, '_nc_timer'):
+            self._nc_timer = 0
+            self._nc_gap_timer = 0
+            self._nc_last_arrival = 0
+        min_g = getattr(Defaults, 'TRAFFIC_LIGHT_MIN_GREEN', 5)
+        max_g = getattr(Defaults, 'TRAFFIC_LIGHT_MAX_GREEN', 30)
+        gap = getattr(Defaults, 'TRAFFIC_LIGHT_GAP', 3)
+        self._nc_timer += 1
+        occ = self.city_model.occupancy_map
         ns_cells, ew_cells = self.get_opposite_traffic_lights().values()
-        local_ns = sum(1 for tl in ns_cells for rb in tl.assigned_road_blocks if rb.occupied)
-        local_ew = sum(1 for tl in ew_cells for rb in tl.assigned_road_blocks if rb.occupied)
-        # pressure in each direction
-        self._pressure_ns = local_ns - local_ew
-        self._pressure_ew = local_ew - local_ns
-
-        # ── 2) aggregate with *neighbors’* pressures ────────────────────
-        total_ns = self._pressure_ns
-        total_ew = self._pressure_ew
-        for neighbor in self.get_neighbor_groups().values():
-            # direct attribute access—no re‐scanning
-            total_ns += getattr(neighbor, '_pressure_ns', 0)
-            total_ew += getattr(neighbor, '_pressure_ew', 0)
-
-        # ── 3) decide desired axis ───────────────────────────────────────
-        desired = 0 if total_ns >= total_ew else 2
-
-        # ── 4) finite‐state timing & phase switching ─────────────────────
-        self._ne_timer += 1
-
-        if self._ne_phase in (0, 2):
-            if self._ne_timer == 1:
-                self._apply_phase(self._ne_phase)
-            if self._ne_timer >= min_green and self._ne_phase != desired:
-                # go into all‐red before the switch
-                self._ne_phase = 1 if self._ne_phase == 0 else 3
-                self._ne_timer = 0
-
-        else:  # all‐red phases 1 or 3
-            if self._ne_timer == 1:
-                self.set_all_stop()
-            if self._ne_timer >= redbuf:
-                # switch to the chosen green
-                self._ne_phase = desired
-                self._ne_timer = 0
-
-    def _apply_phase(self, phase):
-        ns_lights, ew_lights = self.get_opposite_traffic_lights().values()
-        if phase == 0:
-            for tl in ns_lights: tl.set_light_go()
-            for tl in ew_lights: tl.set_light_stop()
+        ns_q = sum(1 for tl in ns_cells for x,y in (rb.position for rb in tl.assigned_road_blocks) if occ[y,x])
+        ew_q = sum(1 for tl in ew_cells for x,y in (rb.position for rb in tl.assigned_road_blocks) if occ[y,x])
+        if self.current_phase == 0:
+            current_q, opp_q = ns_q, ew_q
         else:
-            for tl in ew_lights: tl.set_light_go()
-            for tl in ns_lights: tl.set_light_stop()
+            current_q, opp_q = ew_q, ns_q
+        if current_q > self._nc_last_arrival:
+            self._nc_last_arrival = current_q
+            self._nc_gap_timer = 0
+        else:
+            self._nc_gap_timer += 1
+        score_ns, score_ew = ns_q, ew_q
+        for nb in self.get_neighbor_groups().values():
+            nb_phase = getattr(nb, 'current_phase', None)
+            if nb_phase == 0:
+                nb_ns = sum(1 for tl in nb.get_opposite_traffic_lights()["N-S"] for x,y in (rb.position for rb in tl.assigned_road_blocks) if occ[y,x])
+                score_ns += nb_ns; score_ew -= nb_ns
+            elif nb_phase == 1:
+                nb_ew = sum(1 for tl in nb.get_opposite_traffic_lights()["W-E"] for x,y in (rb.position for rb in tl.assigned_road_blocks) if occ[y,x])
+                score_ew += nb_ew; score_ns -= nb_ew
+        desired = 0 if score_ns >= score_ew else 1
+        if (
+            self._nc_timer >= min_g and (
+                self._nc_gap_timer >= gap or
+                self._nc_timer >= max_g or
+                (current_q == 0 and opp_q > 0) or
+                desired != self.current_phase
+            )
+        ):
+            self.apply_phase(desired)
+            self._nc_timer = 0
+            self._nc_gap_timer = 0
+            self._nc_last_arrival = current_q
+
+
 
 

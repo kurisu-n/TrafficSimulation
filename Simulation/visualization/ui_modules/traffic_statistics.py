@@ -124,6 +124,7 @@ class TrafficStatistics(TextElement):
             pct_thr = dta.cached_stats.get("percentage_created_through", 0.0)
             rem_thr = dta.cached_stats.get("remaining_through", 0)
             live_thr = dta.live_count("through")
+            errored_thr = dta.count_errored_through
 
             completed_thr = dta.count_completed_through
             total_int = dta.cached_stats.get("daily_total_internal", 0)
@@ -131,6 +132,7 @@ class TrafficStatistics(TextElement):
             pct_int = dta.cached_stats.get("percentage_created_internal", 0.0)
             rem_int = dta.cached_stats.get("remaining_internal", 0)
             live_int = dta.live_count("internal")
+            errored_int = dta.count_errored_internal
 
             completed_int = dta.cached_stats.get("count_completed_internal", 0)
 
@@ -152,6 +154,8 @@ class TrafficStatistics(TextElement):
             malfunctions = dta.cached_stats.get("malfunctions", 0)
             parked = dta.cached_stats.get("parked", 0)
             overtaking = dta.cached_stats.get("overtaking", 0)
+            stuck = dta.cached_stats.get("stuck", 0)
+            stuck_detouring = dta.cached_stats.get("stuck_detour", 0)
 
             traffic_section = f'''
             <div id="stats-grid">
@@ -161,6 +165,7 @@ class TrafficStatistics(TextElement):
                 <div class="stat-block">Created {created_thr} ({pct_thr:.1f}%)</div>
                 <div class="stat-block">Remaining {rem_thr}</div>
                 <div class="stat-block">Completed {completed_thr}</div>
+                <div class="stat-block">Errored {errored_thr}</div>
                 <div class="stat-block">Live {live_thr}</div>
               </div>
 
@@ -170,6 +175,7 @@ class TrafficStatistics(TextElement):
                 <div class="stat-block">Created {created_int} ({pct_int:.1f}%)</div>
                 <div class="stat-block">Remaining {rem_int}</div>
                 <div class="stat-block">Completed {completed_int}</div>
+                <div class="stat-block">Errored {errored_int}</div>
                 <div class="stat-block">Live {live_int}</div>
               </div>
 
@@ -199,6 +205,8 @@ class TrafficStatistics(TextElement):
                 <div class="stat-block">Malfunctions {malfunctions}</div>
                 <div class="stat-block">Parked {parked}</div>
                 <div class="stat-block">Overtaking {overtaking}</div>
+                <div class="stat-block">Stuck {stuck}</div>
+                <div class="stat-block">Detouring {stuck_detouring}</div>
 
                 <h4>Weather Status</h4>
                 <div class="stat-block">Rain Count Today {len(model.rains)}</div>

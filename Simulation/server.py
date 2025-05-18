@@ -2,12 +2,10 @@
 
 import socket
 from mesa.visualization.modules import CanvasGrid
-from mesa.visualization.ModularVisualization import ModularServer
 from mesa_viz_tornado.ModularVisualization import VisualizationElement
 
 from Simulation.config import Defaults
 from Simulation.visualization.dynamic_grid_server import DynamicGridServer
-from Simulation.visualization.ui_modules.test_flow_mask import interactive_check
 from Simulation.visualization.ui_modules.traffic_light_control import TrafficLightControl, add_traffic_light_routes
 from Simulation.visualization.ui_modules.traffic_statistics import TrafficStatistics
 from Simulation.visualization.ui_modules.vehicle_control import ManualVehicleControl, add_manual_vehicle_routes
@@ -16,7 +14,7 @@ from Simulation.visualization.model_parameters import model_params
 from Simulation.city_model import CityModel
 from Simulation.visualization.agent_portrayal import agent_portrayal
 
-def get_free_port(default=9000, max_tries=100):
+def get_free_port(default=9525, max_tries=100):
     for offset in range(max_tries):
         port = default + offset
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

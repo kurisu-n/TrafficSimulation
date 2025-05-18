@@ -3,14 +3,11 @@ from mesa import Agent
 import random
 from typing import TYPE_CHECKING, cast
 
-from numba.typed import List, Dict
-
 from Simulation.config import Defaults
 from Simulation.agents.city_structure_entities.cell import CellAgent
 from Simulation.utilities.general import *
 from Simulation.utilities.numba_utilities import compute_direction
 from Simulation.utilities.pathfinding.astar_numba import astar_numba
-from Simulation.utilities.pathfinding.astar_python import astar_python
 
 if TYPE_CHECKING:
     from Simulation.city_model import CityModel
@@ -23,13 +20,14 @@ class VehicleAgent(Agent):
     # ════════════════════════════════════════════════════════════
     #  INIT / HELPERS
     # ════════════════════════════════════════════════════════════
-    def __init__(self, custom_id, model, start_cell: CellAgent, target_cell: CellAgent, population_type = None):
+    def __init__(self, custom_id, model, start_cell: CellAgent, target_cell: CellAgent, population_type = "undefined", vehicle_type = "undefined"):
         super().__init__(str_to_unique_int(custom_id), model)
         self.id = custom_id
         self.start_cell = start_cell
         self.target = target_cell
         self.previous_pos = None
         self.population_type = population_type
+        self.vehicle_type = vehicle_type
 
         self.base_speed = 0      # «cruising» speed valid until a full stop
         self.current_speed = 0   # speed granted *this* tick
@@ -43,6 +41,15 @@ class VehicleAgent(Agent):
         self.pre_overtake_path: list[tuple[int, int]] = []
         self.overtaking_duration: int = -1
 
+        self.is_in_stuck_detour: bool = False
+        self.pre_stuck_detour_path: list[tuple[int, int]] = []
+        self.stuck_detour_path: list[tuple[int, int]] = []
+        self.stuck_detour_target: tuple[int, int] | None = None
+        self.stuck_detour_duration: int = -1
+
+        self._stuck_ticks = 0
+
+        self.is_stuck = False
         self.is_parked = False
         self.is_in_collision = False
         self.is_in_malfunction = False
@@ -61,10 +68,18 @@ class VehicleAgent(Agent):
 
         self.steps_traveled: int = 0
 
-        self.city_model.place_vehicle(self,self.start_cell.get_position())
+        self.city_model.place_vehicle(self, self.start_cell.get_position(), population_type=population_type, vehicle_type=vehicle_type)
 
         self.path: list[tuple[int, int]] = []
         self.path = self._compute_path()
+
+        self._base_portrayal = {
+            "Shape":      "circle",
+            "r":          0.66,
+            "Filled":     True,
+            "Layer":      1,
+            "Color":      self.base_color
+        }
 
     # ------------------------------------------------------------
     #  Utilities
@@ -79,7 +94,7 @@ class VehicleAgent(Agent):
 
         # --- Weather adjustment (rain) --------------------------------
         x, y = self.pos
-        if self.city_model.rain_map[y, x] == 1:
+        if Defaults.RAIN_ENABLED and self.city_model.rain_map[y, x] == 1:
             speed = max(1, speed - Defaults.RAIN_SPEED_REDUCTION)
 
         return speed
@@ -89,31 +104,30 @@ class VehicleAgent(Agent):
         """Pick a persistent cruising speed until the next full stop."""
         return random.randint(*(Defaults.VEHICLE_MIN_SPEED, Defaults.VEHICLE_MAX_SPEED))
 
-    @staticmethod
-    def _is_a_stop_cell(cell: CellAgent) -> bool:
-        return getattr(cell, "status", "Pass") == "Stop"
-
     def _is_a_stop_cell_position(self, pos: tuple[int, int]) -> bool:
+        if pos is None:
+            return False
+
         x, y = pos
         return self.city_model.stop_map[y, x] == 1
 
     def _is_at_stopped_cell(self) -> bool:
+        if self.pos is None:
+            return False
+
         if self._is_a_stop_cell_position(self.pos):
             return True
         return False
 
-    def _path_from_positions(self, positions: list[tuple[int, int]]):
-        return [self.city_model.get_cell_contents(pos[0], pos[1])[0] for pos in positions]
+    def _is_at_intersection(self) -> bool:
+        if self.pos is None:
+            return False
 
-    def _neighbor_positions(self, pos: tuple[int, int]):
-        x, y = pos
-        cell = self.city_model.get_cell_contents(x, y)[0]
-        for d in cell.directions:
-            dx, dy = Defaults.DIRECTION_VECTORS[d]
-            nx, ny = x + dx, y + dy
-            if self.city_model.in_bounds(nx, ny):
-                yield (nx, ny)
-
+        x0, y0 = self.pos
+        if self.city_model.intersection_map[y0, x0] == 1:
+            return True
+        else:
+            return False
 
     # --------------------------------------------------------------------------- #
     #  compute_path wrapper – *inside* VehicleAgent
@@ -135,16 +149,11 @@ class VehicleAgent(Agent):
             if hasattr(self.city_model, "_path_cache") and cache_key in self.city_model._path_cache:
                 return list(self.city_model._path_cache[cache_key])
 
-        # Otherwise, compute real path
-        if Defaults.PATHFINDING_METHOD == "CUDA":
-            path = self._compute_path_cuda()
-        elif Defaults.PATHFINDING_METHOD == "NUMBA":
+        if Defaults.PATHFINDING_METHOD == "NUMBA":
             path = self._compute_path_numba()
-        else:
-            path = self._compute_path_python()
 
         # Cache path if valid and not a contraflow overtaking result
-        if  use_cache and Defaults.PATHFINDING_CACHE and path and not self.is_overtaking:
+        if  use_cache and Defaults.PATHFINDING_CACHE and path and not self.is_overtaking and not self.is_in_stuck_detour:
             if not hasattr(self.city_model, "_path_cache"):
                 self.city_model._path_cache = {}
             self.city_model._path_cache[cache_key] = list(path)
@@ -181,87 +190,6 @@ class VehicleAgent(Agent):
 
         return list(fov_positions)
 
-    def _compute_path_python(
-        self
-    ) -> list["CellAgent"]:
-
-        city = cast("CityModel", self.model)
-        default_start = cast(tuple[int, int], self.pos)
-        default_goal = cast(tuple[int, int], self.target.get_position())
-        fov_positions = self._positions_in_fov_python()
-
-        # ─────────  Phase 0: back to the original path if overtaking  ─────────
-        if self.is_overtaking and self.pre_overtake_path:
-            # 1. Find first free merge cell on the saved original path
-            merge_idx = None
-            merge_pos = None
-            for i, cell in enumerate(self.pre_overtake_path):
-                if not cell.occupied:
-                    merge_idx = i
-                    merge_pos = cell.get_position()
-                    break
-            # 2. If found, compute a contraflow A* back to it
-            if merge_idx is not None:
-                bypass = astar_python(
-                    self.city_model,
-                    self.pos,
-                    merge_pos,
-                    fov_positions,
-                    soft_obstacles=False,
-                    ignore_flow=True,
-                    maximum_steps=Defaults.VEHICLE_MAX_CONTRAFLOW_OVERTAKE_STEPS
-                )
-                # 3. If bypass reaches the merge point, splice and return immediately
-                if bypass and bypass[-1].get_position() == merge_pos:
-                    return bypass + self.pre_overtake_path[merge_idx + 1:]
-            return []
-
-        # ─────────  Phase 1: strict avoidance  ─────────
-        path = astar_python(city, default_start, default_goal, fov_positions,
-                            soft_obstacles= False, ignore_flow = False,)
-
-        # ─────────  Phase 2: allow soft obstacles if no path  ─────────
-        if path is None or len(path) == 0:
-            path = astar_python(city, default_start, default_goal, fov_positions,
-                            soft_obstacles=True, ignore_flow=False)
-
-        # ─────────  Phase 3: Contraflow‐overtake bypass (ignore flow)  ─────────
-        if Defaults.VEHICLE_CONTRAFLOW_OVERTAKE_ACTIVE:
-            idx_stop, idx_vehicle = self._scan_ahead_for_obstacles(path)
-            if idx_vehicle == 0:
-                blocker = self._vehicle_on_cell(path[0])
-                if blocker and (blocker.is_stranded() or blocker.is_parked):
-                    # find first free cell past blocker
-                    bypass_position = None
-                    for cell in path:
-                        if not cell.occupied:
-                            bypass_position = cell.get_position()
-                            break
-                    if bypass_position is not None:
-                        # compute bypass path ignoring vehicles and flow
-                        bypass_path = astar_python(
-                            city, default_start, bypass_position, fov_positions,
-                            soft_obstacles=False, ignore_flow=True,
-                            maximum_steps=Defaults.VEHICLE_MAX_CONTRAFLOW_OVERTAKE_STEPS
-                        )
-                        # validate bypass_path
-                        if (bypass_path
-                                and len(bypass_path) > 1
-                                and bypass_path[-1].get_position() == bypass_position):
-                                # patch original path: replace segment up to bypass with bypass_path
-                                idx_bp = next(
-                                    i for i, c in enumerate(path)
-                                    if c.get_position() == bypass_position)
-
-                                self.pre_overtake_path = path
-                                patched = bypass_path + path[idx_bp+1:]
-                                self.overtake_path = bypass_path
-                                self.is_overtaking = True
-                                self.overtaking_duration = 0
-                                return patched
-
-        return path
-
     def _compute_path_numba(self) -> list[tuple[int, int]]:
         """
         Find a path to the target using the optimized JIT-compiled A*.
@@ -279,7 +207,7 @@ class VehicleAgent(Agent):
         allowed_dirs_map = city.allowed_dirs_map   # bitmask of allowed flows
         is_road_map      = city.is_road_map        # 1 = this is a road cell
 
-        # ─────────  Phase 0: back to the original path if overtaking  ─────────
+        # ─────────  Phase 0: back to the original path if overtaking or patching  ─────────
         if self.is_overtaking and self.pre_overtake_path:
             city = self.city_model
             width, height = city.get_width(), city.get_height()
@@ -310,7 +238,35 @@ class VehicleAgent(Agent):
                     self.overtake_path = bypass_path
                     return bypass_path + self.pre_overtake_path[merge_idx + 1:]
 
-            return []
+        if self.is_in_stuck_detour and self.pre_stuck_detour_path:
+            city = self.city_model
+            width, height = city.get_width(), city.get_height()
+            # 1. Find first free merge cell on the saved original path
+            merge_idx = None
+            for i, cell in enumerate(self.pre_stuck_detour_path):
+                x_m, y_m = cell
+                if city.occupancy_map[y_m, x_m] == 0:
+                    merge_idx = i
+                    bx, by = x_m, y_m
+                    break
+            # 2. If found, build FOV map and run contraflow A* to merge point
+            if merge_idx is not None:
+                bypass_coords = astar_numba(
+                    width, height,
+                    *self.pos, bx, by,
+                    city.occupancy_map, city.stop_map,
+                    city.is_road_map, city.allowed_dirs_map,
+                    respect_awareness=Defaults.VEHICLE_RESPECT_AWARENESS,
+                    awareness_range=Defaults.VEHICLE_AWARENESS_RANGE,
+                    soft_obstacles=False,
+                    ignore_flow=True,
+                    maximum_steps=Defaults.VEHICLE_MAX_CONTRAFLOW_OVERTAKE_STEPS
+                )
+                bypass_path = list(bypass_coords)
+                # 3. If bypass reaches the merge point, splice and return immediately
+                if bypass_path and bypass_path[-1] == (bx, by):
+                    self.stuck_detour_path = bypass_path
+                    return bypass_path + self.pre_stuck_detour_path[merge_idx + 1:]
 
         # ───────── Phase 1: strict avoidance ─────────
         path_coords = astar_numba(
@@ -353,7 +309,6 @@ class VehicleAgent(Agent):
                 if idx_stop is not None and idx_vehicle is not None:
                     break
 
-            # if the very next cell is blocked by a stranded/parked vehicle
             if idx_vehicle == 0:
                 blocker = self._vehicle_on_cell(path[0])
                 if blocker and (blocker.is_stranded() or blocker.is_parked):
@@ -395,106 +350,59 @@ class VehicleAgent(Agent):
                                 self.overtake_path = bypass_path
                                 patched = bypass_path + path[idx_bp+1:]
                                 self.is_overtaking = True
+                                self.city_model.dynamic_traffic_generator.overtaking += 1
                                 self.overtaking_duration = 0
                                 return patched
 
-        return path
+        # ───────── Phase 4: generic patch-on-block obstacle ─────────
+        if Defaults.VEHICLE_STUCK_CONTRAFLOW_ENABLED and path:
+            if self._is_at_intersection():
+                threshold = Defaults.VEHICLE_STUCK_CONTRAFLOW_THRESHOLD_INTERSECTION
+            else:
+                threshold = Defaults.VEHICLE_STUCK_CONTRAFLOW_THRESHOLD
 
-    def _compute_path_cuda(self) -> list[tuple[int, int]]:
-        """
-        Find a path using the GPU‐accelerated A* kernel, with optional FOV‐based obstacle handling.
-        """
-        city = self.city_model
-        width, height = city.get_width(), city.get_height()
-        sx, sy = self.pos
-        gx, gy = self.target.get_position()
+            stuck_generic = self._stuck_ticks >= threshold
+            if stuck_generic and path:
+                # Find next free cell down the planned route
+                bypass_target = None
+                for cell in path:
+                    tx, ty = cell
+                    if self.city_model.occupancy_map[ty, tx] == 0:
+                        bypass_target = (tx, ty)
+                        break
 
-        # ───────── Phase 0: merge back after overtaking ─────────
-        if self.is_overtaking and self.pre_overtake_path:
-            merge_idx = None
-            for i, cell in enumerate(self.pre_overtake_path):
-                x_m, y_m = cell.get_position()
-                if city.occupancy_map[y_m, x_m] == 0:
-                    merge_idx = i
-                    bx, by = x_m, y_m
-                    break
-            if merge_idx is not None:
-                path_coords = city.path_planner.find_path(
-                    (sx, sy), (bx, by),
-                    respect_awareness=False,
-                    soft_obstacles=False,
-                    ignore_flow=True,
-                    maximum_steps=Defaults.VEHICLE_MAX_CONTRAFLOW_OVERTAKE_STEPS
-                )
-                if path_coords and path_coords[-1] == (bx, by):
-                    bypass_path = [city.get_cell_contents(x, y)[0] for (x, y) in path_coords]
-                    self.overtake_path = bypass_path
-                    return bypass_path + self.pre_overtake_path[merge_idx + 1:]
-            return []
+                if bypass_target:
+                    tx, ty = bypass_target
+                    # compute bypass path ignoring dynamic obstacles
+                    bypass_coords = astar_numba(
+                        city.get_width(), city.get_height(),
+                        *self.pos, tx, ty,
+                        occupancy_map, stop_map, is_road_map, allowed_dirs_map,
+                        respect_awareness=Defaults.VEHICLE_RESPECT_AWARENESS,
+                        awareness_range=Defaults.VEHICLE_AWARENESS_RANGE,
+                        soft_obstacles=True,
+                        ignore_flow=True,
+                        maximum_steps=Defaults.VEHICLE_MAX_CONTRAFLOW_STUCK_DETOUR_STEPS
+                    )
+                    bypass_path = list(bypass_coords)
+                    if bypass_path and bypass_path[-1] == (tx, ty) and len(bypass_path) > 1:
+                        # splice and set patch flags
+                        try:
+                            merge_idx = next(i for i, c in enumerate(path) if c == (tx, ty))
+                        except StopIteration:
+                            merge_idx = None
 
-        # ───────── Phase 1: strict avoidance ─────────
-        path_coords = city.path_planner.find_path(
-            (sx, sy), (gx, gy),
-            respect_awareness=True,
-            soft_obstacles=False,
-            ignore_flow=False,
-            maximum_steps=0x7FFFFFFF
-        )
-        path = path_coords if path_coords else None
-        # ───────── Phase 2: allow soft obstacles ─────────
-        if not path or len(path) == 0:
-            path_coords = city.path_planner.find_path(
-                (sx, sy), (gx, gy),
-                respect_awareness=True,
-                soft_obstacles=True,
-                ignore_flow=False,
-                maximum_steps=0x7FFFFFFF
-            )
-            path = path_coords if path_coords else None
+                        if merge_idx is not None:
+                            self.pre_stuck_detour_path = path.copy()
+                            self.stuck_detour_path = bypass_path
+                            self.stuck_detour_target = bypass_target
+                            patched = bypass_path + path[merge_idx + 1:]
+                            self.city_model.dynamic_traffic_generator.in_stuck_detour += 1
+                            self.is_in_stuck_detour = True
+                            self.stuck_detour_duration = 0
+                            return patched
 
-        # ───────── Phase 3: contraflow overtaking bypass ─────────
-        if path and Defaults.VEHICLE_CONTRAFLOW_OVERTAKE_ACTIVE:
-            aw = Defaults.VEHICLE_AWARENESS_RANGE
-            idx_stop = idx_vehicle = None
-            for i in range(min(aw, len(path))):
-                x_i, y_i = path[i].get_position()
-                if idx_stop is None and city.stop_map[y_i, x_i] == 1: idx_stop = i
-                if idx_vehicle is None and city.occupancy_map[y_i, x_i] == 1: idx_vehicle = i
-                if idx_stop is not None and idx_vehicle is not None:
-                    break
-
-            if idx_vehicle == 0:
-                blocker = self._vehicle_on_cell(path[0])
-                if blocker and (blocker.is_stranded() or blocker.is_parked):
-                    # find first free cell beyond blocker
-                    bypass_target = None
-                    for cell in path:
-                        bx, by = cell.get_position()
-                        if city.occupancy_map[by, bx] == 0:
-                            bypass_target = (bx, by)
-                            break
-
-                    if bypass_target:
-                        path_coords = city.path_planner.find_path(
-                            (sx, sy), bypass_target,
-                            respect_awareness=False,
-                            soft_obstacles=False,
-                            ignore_flow=True,
-                            maximum_steps=Defaults.VEHICLE_MAX_CONTRAFLOW_OVERTAKE_STEPS
-                        )
-                        if path_coords and len(path_coords) > 1 and path_coords[-1] == bypass_target:
-                            bypass_path = path_coords
-                            try:
-                                idx_bp = next(i for i, c in enumerate(path) if c.get_position() == bypass_target)
-                            except StopIteration:
-                                idx_bp = None
-                            if idx_bp is not None:
-                                self.pre_overtake_path = path
-                                patched = bypass_path + path[idx_bp + 1:]
-                                self.overtake_path = bypass_path
-                                self.is_overtaking = True
-                                self.overtaking_duration = 0
-                                return patched
+                    return path
 
         return path
 
@@ -539,12 +447,25 @@ class VehicleAgent(Agent):
                 (self.overtake_path is None or len(self.overtake_path) == 0 or self.pos not in self.overtake_path)):
             self.overtake_path = None
             self.is_overtaking = False
+            self.city_model.dynamic_traffic_generator.overtaking += 0
+
+        if (self.is_in_stuck_detour and
+                (self.stuck_detour_path is None or len(self.stuck_detour_path) == 0 or self.pos not in self.stuck_detour_path)):
+            self.stuck_detour_path = None
+            self.is_in_stuck_detour = False
+            self.city_model.dynamic_traffic_generator.in_stuck_detour += 0
+
 
         idx_stop, idx_vehicle = self._scan_ahead_for_obstacles(self.path)
 
         if self.is_overtaking:
             self.overtaking_duration += 1
             if self.overtaking_duration <= Defaults.VEHICLE_CONTRAFLOW_OVERTAKE_DURATION:
+                return idx_stop, idx_vehicle
+
+        if self.is_in_stuck_detour:
+            self.stuck_detour_duration += 1
+            if self.stuck_detour_duration <= Defaults.VEHICLE_CONTRAFLOW_STUCK_DETOUR_DURATION:
                 return idx_stop, idx_vehicle
 
         if self.path_retry_cooldown > 0:
@@ -569,6 +490,28 @@ class VehicleAgent(Agent):
 
         return idx_stop, idx_vehicle
 
+    def _recompute_path_on_stuck(self):
+        """
+        If we’ve been in the same cell for too many ticks (and it’s not a Stop‐cell),
+        force a fresh path compute (bypass cache).
+        """
+        # 2) Increment if we didn’t change position
+        if self.previous_pos == self.pos and not self._is_a_stop_cell_position(self.pos):
+            self._stuck_ticks += 1
+            if self._stuck_ticks > Defaults.VEHICLE_STUCK_RECOMPUTE_THRESHOLD and not self.is_stuck:
+                self.city_model.dynamic_traffic_generator.stuck += 1
+                self.is_stuck = True
+
+        # 3) Pick threshold: intersection vs. regular road
+        if self._is_at_intersection():
+            thresh = Defaults.VEHICLE_STUCK_RECOMPUTE_THRESHOLD_INTERSECTION
+        else:
+            thresh = Defaults.VEHICLE_STUCK_RECOMPUTE_THRESHOLD
+
+        # 4) If we’ve exceeded the threshold, replan immediately
+        if self._stuck_ticks >= thresh:
+            self.path = self._compute_path(use_cache=False)
+
     DIR_LOOKUP = ["N", "E", "S", "W"]
 
     def _move_to(self, new_pos: tuple[int, int], old_pos: tuple[int, int] = None):
@@ -578,12 +521,20 @@ class VehicleAgent(Agent):
         if dir_idx != -1:
             self.direction = self.DIR_LOOKUP[dir_idx]
 
+        if self._stuck_ticks > 0:
+            if self._stuck_ticks >= Defaults.VEHICLE_STUCK_RECOMPUTE_THRESHOLD and self.is_stuck:
+                self.city_model.dynamic_traffic_generator.stuck -= 1
+                self.is_stuck = False
+            self._stuck_ticks = 0
+
     def _set_collision(self, ticks: int):
         """Mark the vehicle stranded due to a collision."""
         self.is_in_collision = True
         self.is_in_malfunction = False
         self._stranded_ticks_remaining = ticks
         self.base_speed = 0
+        self.current_speed = 0
+        self.city_model.dynamic_traffic_generator.collisions += 1
 
     def _set_malfunction(self, ticks: int):
         """Mark the vehicle stranded due to a malfunction."""
@@ -591,12 +542,19 @@ class VehicleAgent(Agent):
         self.is_in_collision = False
         self._stranded_ticks_remaining = ticks
         self.base_speed = 0
+        self.current_speed = 0
+        self.city_model.dynamic_traffic_generator.malfunctions += 1
 
     def _tick_stranded(self) -> bool:
         if not self.is_stranded():
             return False
         self._stranded_ticks_remaining -= 1
         if self._stranded_ticks_remaining <= 0:
+            if self.is_in_collision:
+                self.city_model.dynamic_traffic_generator.collisions -= 1
+            if self.is_in_malfunction:
+                self.city_model.dynamic_traffic_generator.malfunctions -= 1
+
             self.is_in_collision = False
             self.is_in_malfunction = False
             self._stranded_ticks_remaining = 0
@@ -625,12 +583,22 @@ class VehicleAgent(Agent):
 
             for ag in self.city_model.get_cell_contents(nx, ny):
                 # only sideswipe if they’re moving alongside me
-                if isinstance(ag, VehicleAgent) and ag.direction is Defaults.DIRECTION_OPPOSITES[self.get_current_direction()]:
-                    if random.random() >= Defaults.VEHICLE_SIDESWIPE_COLLISION_CHANCE:
-                        return
-                    self._set_collision(Defaults.VEHICLE_SIDESWIPE_COLLISION_DURATION)
-                    ag._set_collision(Defaults.VEHICLE_SIDESWIPE_COLLISION_DURATION)
+                if not isinstance(ag, VehicleAgent):
+                    continue
+
+                # 1) Skip if they’re not moving
+                if ag.current_speed <= 0 or ag.is_stuck or ag.is_parked or ag.is_in_collision or ag.is_in_malfunction:
+                    continue
+
+                if ag.direction is not Defaults.DIRECTION_OPPOSITES[self.get_current_direction()]:
+                    continue
+
+                if random.random() >= Defaults.VEHICLE_SIDESWIPE_COLLISION_CHANCE:
                     return
+
+                self._set_collision(Defaults.VEHICLE_SIDESWIPE_COLLISION_DURATION)
+                ag._set_collision(Defaults.VEHICLE_SIDESWIPE_COLLISION_DURATION)
+                return
 
 
     def _check_malfunction(self):
@@ -642,47 +610,68 @@ class VehicleAgent(Agent):
     # ════════════════════════════════════════════════════════════
 
     def step(self):
-        """Advance the vehicle for one tick, obeying lights and traffic."""
-
+        """Advance the vehicle one tick, obeying traffic rules and lights."""
+        # 0) Stranded / malfunction checks
         if self._tick_stranded():
             self.base_speed = 0
+            self.current_speed = 0
             return
-
         self._check_malfunction()
         if self.is_stranded():
             self.base_speed = 0
+            self.current_speed = 0
             return
-
         self._check_sideswipe_collision()
         if self.is_stranded():
             self.base_speed = 0
+            self.current_speed = 0
             return
-
         if self._is_at_stopped_cell():
             self.base_speed = 0
+            self.current_speed = 0
             return
 
+        # 1) Compute current speed
         self.current_speed = self._compute_speed()
 
+        # 2) Maybe force a replan if stuck too long
+        self._recompute_path_on_stuck()
+
+        # 3) Existing obstacle-triggered replan (stop‐signs, blocked cells)
         idx_stop, idx_vehicle = self._recompute_path_on_obstacle()
 
+        # 4) Determine how many steps we can take this tick
         self.max_steps, self.blocked_by_vehicle = self._determine_max_steps(idx_stop, idx_vehicle)
         if self.max_steps <= 0:
             self.base_speed = 0
-
-            if self.pos == self.target.pos:
+            if self.pos == self.target.get_position():
                 self.on_target_reached()
+            return
 
-            return # no movement possible this tick
-
+        # 5) Execute movement
+        moved_this_tick = False
         self._execute_movement(self.max_steps)
         moved_this_tick = True
 
+        # 6) If we couldn’t move and path is empty, plan a fresh path
         if not moved_this_tick and (not self.path or len(self.path) == 0):
             self.path = self._compute_path()
 
-        if self.pos is self.target.get_position():
+        # 7) Save for next‐tick stuck detection
+        self.previous_pos = self.pos
+
+        # 8) Arrival callback
+        if self.pos == self.target.get_position():
             self.on_target_reached()
+
+        if (Defaults.VEHICLE_STUCK_DESPAWN_ENABLED and
+                (self._stuck_ticks > (Defaults.VEHICLE_STUCK_DESPAWN_THRESHOLD_INTERSECTION if self._is_at_intersection() else Defaults.VEHICLE_STUCK_DESPAWN_THRESHOLD))):
+            if self.population_type == "internal":
+                self.city_model.dynamic_traffic_generator.count_errored_internal += 1
+            else:
+                self.city_model.dynamic_traffic_generator.count_errored_through += 1
+            self._despawn()
+            return
 
     # ------------------------------------------------------------
     #  STEP helper methods (private)
@@ -696,8 +685,6 @@ class VehicleAgent(Agent):
                 return ag
         return None
 
-
-
     def _determine_max_steps(self, idx_stop, idx_vehicle):
         """Return a tuple *(max_steps, blocked_by_vehicle)* for this tick."""
         max_steps = min(self.current_speed,len(self.path))
@@ -709,7 +696,7 @@ class VehicleAgent(Agent):
         if idx_vehicle is not None:
             if idx_vehicle == 0:
                 blocked_by_vehicle = True        # cannot even enter the next cell
-            max_steps = min(max_steps, idx_vehicle)  # stop *before* occupied cell
+            max_steps = min(max_steps, idx_vehicle)
         return max_steps, blocked_by_vehicle
 
     def _execute_movement(self, max_steps: int):
@@ -758,15 +745,16 @@ class VehicleAgent(Agent):
 
     def _despawn(self) -> None:
         """Remove this agent from the grid and scheduler."""
-        self.city_model.remove_vehicle(self)
+        self.city_model.remove_vehicle(self, population_type=self.population_type, vehicle_type=self.vehicle_type)
 
     def _park(self) -> None:
         """Leave the vehicle in place but mark it as inactive."""
         self.is_parked = True
+        self.city_model.dynamic_traffic_generator.parked += 1
         pass
 
     def _get_base_color(self):
-        if self.is_overtaking:
+        if self.is_overtaking or self.is_in_stuck_detour:
             return Defaults.VEHICLE_CONTRAFLOW_OVERTAKE_COLOR
         else:
             return self.base_color
@@ -790,49 +778,51 @@ class VehicleAgent(Agent):
         return f"{self.population_type} Citizen"
 
     def get_portrayal(self):
+        # Shallow-copy only the static bits cached at init
+        p = self._base_portrayal.copy()
 
-        direction_arrow = Defaults.DIRECTION_ICONS.get(self.get_current_direction(), '?')
+        if Defaults.AGENT_PORTRAYAL_LEVEL == 0:
+            return p
 
-        portrayal = {
-            "Shape": "circle", "r": 0.66, "Filled": True,
-            "Color": self._get_base_color(),
-            "Layer": 1,
-            "Type": self.get_vehicle_type_name(),
-            "Identifier": self.unique_id,
-            "Position": self.pos,
-            "Description": self.get_description(),
+        if Defaults.AGENT_PORTRAYAL_LEVEL >= 1:
+            flash_on = (self.city_model.step_count % 2) == 0
+            if self.is_in_collision:
+                alt = Defaults.VEHICLE_COLLISION_COLOR
+                p["Color"] = self._get_base_color() if flash_on else alt
+            elif self.is_in_malfunction:
+                alt = Defaults.VEHICLE_MALFUNCTION_COLOR
+                p["Color"] = self._get_base_color() if flash_on else alt
+            elif self.is_parked:
+                alt = Defaults.VEHICLE_PARKED_COLOR
+                p["Color"] = self._get_base_color() if flash_on else alt
+            else:
+                p["Color"] = self._get_base_color()
 
-            "Direction": direction_arrow,
-            "Speed": self.current_speed
-        }
+        if Defaults.AGENT_PORTRAYAL_LEVEL >= 2:
+            p["Type"] = self.get_vehicle_type_name()
+            p["Identifier"] = self.unique_id
+            p["Description"] = self.get_description()
 
-        flags = []
-        for flag, label in [
-            ("is_overtaking", "Overtaking"),
-            ("is_malfunctioning", "Malfunctioning"),
-            ("in_collision", "InCollision"),
-            ("is_parked", "Parked"),
-        ]:
-            if getattr(self, flag, False):
-                flags.append(label)
-        if flags and len(flags) > 0:
-            portrayal["Status"] = ", ".join(flags)
-        else:
-            portrayal["Status"] = "Ok"
+            # 2) patch dynamic vehicle fields
+            p["Position"]            = self.pos
+            p["Direction"]           = Defaults.DIRECTION_ICONS.get(self.get_current_direction(), "?")
+            p["Speed"]               = self.current_speed
+            p["Current Destination"] = self.target.id if self.target else "None"
 
-        portrayal["Current Destination"] = self.target.id if self.target else "None"
+            # 3) status flags & flashing color logic (reuse base logic)
+            flags = []
+            if self.is_in_stuck_detour:       flags.append("Detouring (Stuck)")
+            if self.is_overtaking:     flags.append("Overtaking")
+            if self.is_in_malfunction: flags.append("Malfunctioning")
+            if self.is_in_collision:   flags.append("InCollision")
+            if self.is_parked:         flags.append("Parked")
+            if self._stuck_ticks > 0:
+                flags.append(f"Stuck ({self._stuck_ticks})")
 
-        flash_on = (self.city_model.step_count % 2) == 0
-        if self.is_in_collision:
-            col_alt = Defaults.VEHICLE_COLLISION_COLOR
-            portrayal["Color"] = self._get_base_color() if flash_on else col_alt
-        elif self.is_in_malfunction:
-            mal_alt = Defaults.VEHICLE_MALFUNCTION_COLOR
-            portrayal["Color"] = self._get_base_color() if flash_on else mal_alt
-        elif self.is_parked:
-            park_alt = Defaults.VEHICLE_PARKED_COLOR
-            portrayal["Color"] = self._get_base_color() if flash_on else park_alt
-        else:
-            portrayal["Color"] = self._get_base_color()
+            p["Status"] = ", ".join(flags) if flags else "Ok"
 
-        return portrayal
+
+
+
+
+        return p

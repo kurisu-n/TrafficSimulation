@@ -16,7 +16,6 @@ from Simulation.agents.city_structure_entities.intersection_light_group import I
 from Simulation.agents.dummy import DummyAgent
 from Simulation.agents.dynamic_traffic_generator import DynamicTrafficAgent
 from Simulation.utilities.numba_utilities import manhattan_distance
-from Simulation.utilities.pathfinding.astar_cuda import PathPlanner
 
 from joblib import Parallel, delayed
 import multiprocessing
@@ -99,18 +98,18 @@ class CityModel(Model):
         self.traffic_lights    = []
         self.intersection_light_groups = []
 
+
         self.occupancy_map = np.zeros((self.height, self.width), dtype=np.int8)
         self.stop_map = np.zeros((self.height, self.width), dtype=np.int8)
         self.allowed_dirs_map = np.zeros((self.height, self.width), dtype=np.uint8)
         self.is_road_map = np.zeros((self.height, self.width), dtype=np.int8)
+        self.intersection_map = np.zeros((self.height, self.width), dtype=np.int8)
 
         self.cell_agent_cache = {}
         self.path_cache = {}
         self.tick_cache = {}
         self.tick_grid = None
         self.cell_lookup = {}
-
-        self.occ: np.ndarray = np.zeros((self.width, self.height), dtype=bool)
 
         # build sequence
         self._place_thick_wall()
@@ -139,13 +138,15 @@ class CityModel(Model):
 
         self._path_cache: dict[tuple[int, int], list[tuple[int, int]]] = {}
 
-        if Defaults.PATHFINDING_METHOD == "CUDA":
-            self.path_planner = PathPlanner(self)
+        for agent in list(self.schedule.agents):
+            # only cells need this
+            if isinstance(agent, CellAgent):
+                agent.expand_static_portrayal()
 
 
         self.rains = []
+        self.rain_map = np.zeros((self.height, self.width), dtype=np.int8)
         if Defaults.RAIN_ENABLED:
-            self.rain_map = np.zeros((height, width), dtype=np.int8)
             self.rain_manager = RainManager("RainManager", self)
             self.schedule.add(self.rain_manager)
 
@@ -1304,7 +1305,6 @@ class CityModel(Model):
                     self.place_cell(road_block_x, road_block_y, "ControlledRoad", f"ControlledRoad_{road_block_x}_{road_block_y}")
                     controlled_road = self.get_cell_contents(road_block_x, road_block_y)[0]
                     controlled_road.directions = road_directions
-                    controlled_road.status = "Pass"
                     controlled_road.base_color = Defaults.ZONE_COLORS.get(original_road_type)
                     self.controlled_roads.append(controlled_road)
 
@@ -1353,20 +1353,15 @@ class CityModel(Model):
         if aspiring_traffic_light.cell_type == "TrafficLight":
             tl = aspiring_traffic_light
         elif aspiring_traffic_light.cell_type == "Sidewalk":
-            # replace with a TrafficLight
             self.place_cell(x, y, "TrafficLight", f"TrafficLight_{x}_{y}")
             tl = self.get_cell_contents(x, y)[0]
             self.traffic_lights.append(tl)
-            tl.status = "Pass"
         else:
             return
 
-        if tl.status == "Stop":
-            sy, sx = tl.get_position()
-            self.stop_map[sy, sx] = 1
-        else:
-            sy, sx = tl.get_position()
-            self.stop_map[sy, sx] = 0
+        # Update stop_map instead of setting .status
+        x, y = tl.get_position()
+        self.stop_map[y, x] = 0
 
         controlled_road.light = tl
         tl.controlled_blocks.append(controlled_road)
@@ -1402,38 +1397,41 @@ class CityModel(Model):
                     break
 
     def _scan_for_traffic_flow_forward(self, road, scanning_directions, original_road_type, traffic_light, scan_depth):
-
         for rd in scanning_directions:
             ctrl_x, ctrl_y = road.get_position()
             bx, by = self.next_cell_in_direction(ctrl_x, ctrl_y, rd)
-
-            while scan_depth <= self.traffic_light_range:
-                if self.in_bounds(bx, by):
-                    currently_scanned_road = self.get_cell_contents(bx, by)[0]
-                    if currently_scanned_road.cell_type == "Intersection":
-
-                        if self.forward_traffic_light_range_intersections == Defaults.FORWARD_TRAFFIC_LIGHT_INTERSECTION_OPTIONS[1]:
-                            traffic_light.assigned_road_blocks.append(currently_scanned_road)
-                            currently_scanned_road.light = traffic_light
-                            scan_depth += 1
-                        elif self.forward_traffic_light_range_intersections == Defaults.FORWARD_TRAFFIC_LIGHT_INTERSECTION_OPTIONS[2]:
-                            traffic_light.assigned_road_blocks.append(currently_scanned_road)
-                            currently_scanned_road.light = traffic_light
-
-                        bx, by = self.next_cell_in_direction(bx, by, rd)
-                    elif currently_scanned_road.cell_type == original_road_type:
-                        if currently_scanned_road.directly_leads_to(road):
-                            self._scan_for_traffic_flow_forward(currently_scanned_road, original_road_type, original_road_type, traffic_light, scan_depth)
-                        elif rd in currently_scanned_road.directions:
-                            traffic_light.assigned_road_blocks.append(currently_scanned_road)
-                            currently_scanned_road.light = traffic_light
-                            scan_depth += 1
-
-                        bx, by = self.next_cell_in_direction(bx, by, rd)
-                    else:
-                        break
+            current_depth = scan_depth
+            while current_depth <= self.traffic_light_range:
+                if not self.in_bounds(bx, by):
+                    break
+                currently_scanned_road = self.get_cell_contents(bx, by)[0]
+                if currently_scanned_road.cell_type == "Intersection":
+                    if self.forward_traffic_light_range_intersections == Defaults.FORWARD_TRAFFIC_LIGHT_INTERSECTION_OPTIONS[1]:
+                        traffic_light.assigned_road_blocks.append(currently_scanned_road)
+                        currently_scanned_road.light = traffic_light
+                        current_depth += 1
+                    elif self.forward_traffic_light_range_intersections == Defaults.FORWARD_TRAFFIC_LIGHT_INTERSECTION_OPTIONS[2]:
+                        traffic_light.assigned_road_blocks.append(currently_scanned_road)
+                        currently_scanned_road.light = traffic_light
+                    bx, by = self.next_cell_in_direction(bx, by, rd)
+                elif currently_scanned_road.cell_type == original_road_type:
+                    if currently_scanned_road.directly_leads_to(road):
+                        # recurse one step further along the same scanning directions
+                        self._scan_for_traffic_flow_forward(
+                            currently_scanned_road,
+                            scanning_directions,
+                            original_road_type,
+                            traffic_light,
+                            current_depth + 1
+                        )
+                    elif rd in currently_scanned_road.directions:
+                        traffic_light.assigned_road_blocks.append(currently_scanned_road)
+                        currently_scanned_road.light = traffic_light
+                        current_depth += 1
+                    bx, by = self.next_cell_in_direction(bx, by, rd)
                 else:
                     break
+
 
     def _create_intersection_light_groups(self) -> None:
         """Scan every *contiguous* block of Intersection cells, work out its
@@ -1487,6 +1485,8 @@ class CityModel(Model):
 
             comp_idx += 1
             group = IntersectionLightGroup(f"Intersection_{comp_idx}", self, lights)
+            group.intersection_cells = [self.get_cell_contents(ix, iy)[0] for (ix, iy) in cluster]
+
             self.intersection_light_groups.append(group)
             self.schedule.add(group)  # optional, keeps API consistent
 
@@ -1645,9 +1645,6 @@ class CityModel(Model):
         self.tick_cache.clear()
         self.tick_grid = None
 
-        if Defaults.RAIN_ENABLED:
-            self.rain_map = self.rain_manager.rain_map
-
         if Defaults.PATHFINDING_METHOD == "CUDA":
             self.path_planner.solve_all()
 
@@ -1697,9 +1694,9 @@ class CityModel(Model):
                 a.pos = None
                 break
 
-    def place_vehicle(self, vehicle: VehicleAgent, pos: tuple[int, int]):
+    def place_vehicle(self, vehicle: VehicleAgent, pos: tuple[int, int]
+                      , population_type: str = "undefined", vehicle_type: str = "undefined"):
         """Place a new VehicleAgent at the vacated position."""
-        self.get_cell_contents(pos[0], pos[1])[0].occupied = True
 
         if self.use_dummy_agents:
             self.remove_dummy(pos[0], pos[1])
@@ -1708,9 +1705,19 @@ class CityModel(Model):
         self.occupancy_map[pos[1], pos[0]] = 1
         self.schedule.add(vehicle)
 
-    def remove_vehicle(self, vehicle: VehicleAgent):
+        if population_type == "internal":
+            self.dynamic_traffic_generator.live_internal += 1
+        elif population_type == "through":
+            self.dynamic_traffic_generator.live_through  += 1
+
+            if vehicle_type == "food":
+                self.dynamic_traffic_generator.live_service_food += 1
+            elif vehicle_type == "waste":
+                self.dynamic_traffic_generator.live_service_waste += 1
+
+    def remove_vehicle(self, vehicle: VehicleAgent
+                      , population_type: str = "undefined", vehicle_type: str = "undefined"):
         x, y = vehicle.pos
-        self.get_cell_contents(x, y)[0].occupied = False
         self.occupancy_map[y, x] = 0
         v_pos = (x, y)
 
@@ -1719,6 +1726,15 @@ class CityModel(Model):
 
         if self.use_dummy_agents and  v_pos is not None:
             self.place_dummy(v_pos[0], v_pos[1])
+
+        if population_type == "internal":
+            self.dynamic_traffic_generator.live_internal -= 1
+        elif population_type == "through":
+            self.dynamic_traffic_generator.live_through  -= 1
+            if vehicle_type == "food":
+                self.dynamic_traffic_generator.live_service_food -= 1
+            elif vehicle_type == "waste":
+                self.dynamic_traffic_generator.live_service_waste -= 1
 
 
 
@@ -1730,11 +1746,9 @@ class CityModel(Model):
         nx, ny = new_pos
 
         self.occupancy_map[oy, ox] = 0
-        self.get_cell_contents(ox, oy)[0].occupied = False
 
         self.grid.move_agent(vehicle, new_pos)
 
-        self.get_cell_contents(nx, ny)[0].occupied = True
         self.occupancy_map[ny, nx] = 1
 
         vehicle.pos = new_pos  # update agent's cached position
@@ -1742,7 +1756,7 @@ class CityModel(Model):
         if self.use_dummy_agents and old_pos is not None:
             self.place_dummy(old_pos[0], old_pos[1])
 
-    def get_cell_contents(self, x: int, y: int) -> Agent | None | list[Agent | None] | list[Any]:
+    def get_cell_contents(self, x: int, y: int) -> Agent | list[Agent] | list[Any]:
         """
         Return the live list of agents at (x, y). Always a list,
         so callers can safely do `[0]`.
@@ -1936,7 +1950,10 @@ class CityModel(Model):
                     continue
                 cell = cell_agents[0]  # assume the first agent is the static cell
                 # Mark road-type cells
-                if cell.cell_type in Defaults.ROADS:
+                if cell.cell_type == "Intersection":
+                    self.intersection_map[y, x] = 1
+
+                if cell.cell_type in Defaults.ROAD_LIKE_TYPES:
                     self.is_road_map[y, x] = 1
                 # Build allowed direction bitmask if this cell defines allowed directions
                 if hasattr(cell, "directions"):

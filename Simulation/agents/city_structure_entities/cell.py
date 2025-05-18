@@ -6,7 +6,6 @@ from collections import deque
 from Simulation.utilities.general import *
 
 if TYPE_CHECKING:
-    from Simulation.agents.city_structure_entities.city_block import CityBlock
     from Simulation.city_model import CityModel
 
 class CellAgent(Agent):
@@ -24,14 +23,11 @@ class CellAgent(Agent):
         super().__init__(str_to_unique_int(custom_id), model)
         self.id = custom_id
         self.position = position
+        self.city_model = cast("CityModel", model)
         self.cell_type = cell_type
         self.directions = []
-        self.status = None
         self.base_color = Defaults.ZONE_COLORS.get(cell_type)
 
-        self.is_raining = False
-
-        self.occupied = False
         self.block_id = None
         self.block_type = None
         self.highway_id = None
@@ -42,11 +38,23 @@ class CellAgent(Agent):
         self.assigned_road_blocks = []
         self.controlled_blocks = []
 
-        self.get_city_model().cell_lookup[self.position] = self
+        self.city_model.cell_lookup[self.position] = self
 
         self.has_been_displayed = False
 
-        self._cached_portrayal: dict | None = None
+        self._base_portrayal = {
+            "Shape":      "rect",
+            "w":          1.0,
+            "h":          1.0,
+            "Filled":     True,
+            "Layer":      0,
+            "Color":      self.base_color
+        }
+        self._cached_portrayal = None
+
+    def expand_static_portrayal(self):
+        self._base_portrayal["Identifier"] = self.get_display_name()
+        self._base_portrayal["Description"] = self.get_description()
 
     def _is_cacheable(self) -> bool:
         """
@@ -66,7 +74,7 @@ class CellAgent(Agent):
         Build a name like "Horizontal_1_South_Entrance_2" or
         "Vertical_3_East_Exit_1" for any HighwayEntrance/Exit cell.
         """
-        model = self.get_city_model()
+        model = self.city_model
         x, y = self.position
         max_x, max_y = model.width - 1, model.height - 1
 
@@ -136,11 +144,6 @@ class CellAgent(Agent):
         typ = "Entrance" if self.cell_type == "HighwayEntrance" else "Exit"
         return f"{orientation}_{group_idx}_{cardinal}_{typ}_{pair_idx}"
 
-
-    def step(self):
-        self.is_raining = False
-        self.rain_map.fill(0)
-
     # ———— utility/query methods ————
 
     def get_display_name(self):
@@ -182,14 +185,14 @@ class CellAgent(Agent):
         x, y = self.get_position()
         nbrs = {}
         for d in self.directions:
-            nx, ny = self.get_city_model().next_cell_in_direction(x, y, d)
-            if self.get_city_model().in_bounds(nx, ny):
-                nbr = self.get_city_model().get_cell_contents((nx, ny))[0]
+            nx, ny = self.city_model.next_cell_in_direction(x, y, d)
+            if self.city_model.in_bounds(nx, ny):
+                nbr = self.city_model.get_cell_contents(nx, ny)[0]
                 nbrs.setdefault(d, []).append(nbr)
         return nbrs
 
     def leads_to(self, other: "CellAgent") -> bool:
-        city_model = self.get_city_model()
+        city_model = self.city_model
         queue = deque([self])
         visited = {self}
 
@@ -217,31 +220,28 @@ class CellAgent(Agent):
         return False
 
     def directly_leads_to(self, other: "CellAgent") -> bool:
-        x,y = self.get_position()
+        x, y = self.get_position()
         for d in self.directions:
-            nx, ny = self.get_city_model().next_cell_in_direction(x,y,d)
-            if not self.get_city_model().in_bounds(nx, ny):
+            nx, ny = self.city_model.next_cell_in_direction(x, y, d)
+            if not self.city_model.in_bounds(nx, ny):
                 continue
-            nbr = self.get_city_model().get_cell_contents((nx, ny))[0]
+            # unpack x, y rather than passing a tuple
+            nbr = self.city_model.get_cell_contents(nx, ny)[0]
             if nbr is other:
                 return True
-
         return False
 
-    def set_light_go(self):
-        if self.is_traffic_light():
-            self.status = "Pass"
-            self.get_city_model().stop_map[self.position[1], self.position[0]] = 0
-            for controlled_block in self.controlled_blocks:
-                controlled_block.status = "Pass"
-
     def set_light_stop(self):
-        if self.is_traffic_light():
-            self.status = "Stop"
-            self.get_city_model().stop_map[self.position[1], self.position[0]] = 1
+        x, y = self.get_position()
+        self.city_model.stop_map[y, x] = 1
+        for controlled_block in self.controlled_blocks:
+            self.city_model.stop_map[controlled_block.position[1], controlled_block.position[0]] = 1
 
-            for controlled_block in self.controlled_blocks:
-                controlled_block.status = "Stop"
+    def set_light_go(self):
+        x, y = self.get_position()
+        self.city_model.stop_map[y, x] = 0
+        for controlled_block in self.controlled_blocks:
+            self.city_model.stop_map[controlled_block.position[1], controlled_block.position[0]] = 0
 
     def get_description(self):
         return Defaults.DESCRIPTION_MAP.get(self.cell_type, "")
@@ -250,88 +250,89 @@ class CellAgent(Agent):
         return not Defaults.CACHE_CELL_PORTRAYAL or not self._is_cacheable() or not self.has_been_displayed
 
     def get_portrayal(self):
-        # ① return cached copy when allowed
+        # 1) if you already fully cached it, just return that
         if (
-            self.get_city_model().cache_cell_portrayal         # global flag
-            and self._cached_portrayal is not None             # already built
-            and self._is_cacheable()                           # type whitelisted
+            self.city_model.cache_cell_portrayal
+            and self._cached_portrayal is not None
+            and self._is_cacheable()
         ):
             return self._cached_portrayal
 
-        arrows = [Defaults.DIRECTION_ICONS.get(d, '') for d in self.directions]
-        direction_text = ' '.join(arrows)
+        # 2) shallow-copy the static bits
+        p = self._base_portrayal.copy()
 
-        portrayal = {
-            "Shape": "rect", "w":1.0, "h":1.0, "Filled":True,
-            "Color": self.base_color,
-            "Layer": 0,
-            "Type": self.cell_type,
-            "Identifier": self.get_display_name(),
-            "Position": self.get_position(),
-            "Description": self.get_description(),
-            "Rain": self.is_raining,
-        }
+        if Defaults.AGENT_PORTRAYAL_LEVEL == 0:
+            return p
 
-        if self.cell_type in Defaults.ROADS:
-            portrayal["Light"] = self.light is not None
-            if Defaults.CHANGE_ASSIGNED_CELL_COLOR_ON_STOP:
-                portrayal["Color"] = (
-                    desaturate(self.base_color, sat_factor=0.75, light_factor=0.25)
-                    if self.light is not None and self.light.status == "Stop"
-                    else self.base_color
-                )
+        if Defaults.AGENT_PORTRAYAL_LEVEL >= 1:
+            color = self.base_color
 
-        if self.cell_type=="ControlledRoad":
-            portrayal["Color"] = (
-                Defaults.ZONE_COLORS["ControlledRoadStop"]
-                if self.status=="Stop"
-                else desaturate(self.base_color, sat_factor=0.75, light_factor=0.25)
-            )
-            portrayal["Control State"] = self.status
+            x, y = self.pos
+            is_stop = self.city_model.stop_map[y, x] == 1
+            is_raining = Defaults.RAIN_ENABLED and self.city_model.rain_map[y, x] > 0
 
-        if self.cell_type =="TrafficLight":
-            portrayal["Color"] = (
-                Defaults.ZONE_COLORS["TrafficLightStop"]
-                if self.status == "Stop"
-                else Defaults.ZONE_COLORS["TrafficLight"]
-            )
+            if self.cell_type in Defaults.ROADS and Defaults.CHANGE_ASSIGNED_CELL_COLOR_ON_STOP and self.light and is_stop:
+                color = desaturate(color, sat_factor=0.75, light_factor=0.25)
 
-        if self.cell_type=="Intersection":
-            portrayal["Intersection Group"] = None if self.intersection_group is None else self.intersection_group.id
-            portrayal["Color"] = (
-                desaturate(self.base_color, sat_factor=0.75, light_factor=0.25)
-                if self.light is not None and self.light.status == "Stop"
-                else self.base_color
-            )
+            if self.cell_type == "ControlledRoad":
+                color = Defaults.ZONE_COLORS["ControlledRoadStop"] if is_stop else desaturate(color, sat_factor=0.75, light_factor=0.25)
 
-        if self.cell_type == "BlockEntrance":
-            portrayal["Block ID"] = self.block_id
+            if self.cell_type == "TrafficLight":
+                color = Defaults.ZONE_COLORS["TrafficLightStop"] if is_stop else Defaults.ZONE_COLORS["TrafficLight"]
 
-            city = cast("CityModel", self.get_city_model())
-            city_block = cast("CityBlock", city.city_blocks.get(self.block_id))
+            if self.cell_type == "Intersection" and self.intersection_group.pending_phase is not None:
+                color = self.base_color if self.intersection_group.pending_phase is None else Defaults.ZONE_COLORS["IntersectionPending"]
 
-            if city_block is not None:
-                if city_block.needs_food():
-                    portrayal["Food"] = (
-                        f"{int(city_block.get_food_units())}/{int(city_block.max_food_units)}")
-                if city_block.produces_waste():
-                    portrayal["Waste"] = (
-                        f"{int(city_block.get_waste_units())}/{int(city_block.max_waste_units)}")
+            # if self.cell_type == "Intersection" and self.light and self.light.status == "Stop":
+            #     color = desaturate(color, sat_factor=0.75, light_factor=0.25)
 
-        if self.cell_type in Defaults.AVAILABLE_CITY_BLOCKS:
-            portrayal["Block ID"] = self.block_id
+            if is_raining:
+                color = desaturate(color, sat_factor=0.95, light_factor=-0.05)
 
-        if self.cell_type == "Sidewalk" and self.block_id is not None:
-            portrayal["Block ID"] = self.block_id
+            p["Color"] = color
 
-        if direction_text:
-            portrayal["Directions"] = direction_text
 
-        if self.get_city_model().cache_cell_portrayal and self._is_cacheable():
-            self._cached_portrayal = dict(portrayal)
-            self.has_been_displayed = True
+            if Defaults.AGENT_PORTRAYAL_LEVEL >= 2:
+                p["Position"] = self.position
+                p["Rain"]     = "Yes" if is_raining else "No"
 
-        if self.is_raining:
-            portrayal["Color"] = desaturate(portrayal["Color"], sat_factor=0.95, light_factor=-0.05)
+                if self.cell_type in Defaults.ROADS:
+                    p["Light"] = self.light is not None
 
-        return portrayal
+                if self.cell_type=="ControlledRoad":
+                    p["Control State"] = "Stop" if is_stop else "Go"
+
+                if self.cell_type=="Intersection":
+                    if self.light is not None and self.intersection_group is not None:
+                        p["Intersection Group"] = self.intersection_group.id
+                        p["Algorithm"] = Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM
+                        p["Current Phase"] = self.intersection_group.current_phase
+                        p["Pending Phase"] = self.intersection_group.pending_phase
+                        if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM == "FIXED_TIME":
+                            p["Fixed-Time Timer"] = self.intersection_group.fixed_time_timer
+                        elif Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM == "QUEUE_ACTUATED":
+                            p["Queue Actuated Timer"] = self.intersection_group.queue_timer
+                        elif Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM == "PRESSURE_CONTROL":
+                            p["N-S Pressure"] = self.intersection_group.ns_pressure
+                            p["E-W Pressure"] = self.intersection_group.ew_pressure
+
+                if self.cell_type == "BlockEntrance" or self.cell_type in Defaults.AVAILABLE_CITY_BLOCKS:
+                    p["Block ID"] = self.block_id
+
+                if self.cell_type=="BlockEntrance" and self.city_model.city_blocks.get(self.block_id):
+                    blk = self.city_model.city_blocks[self.block_id]
+                    if blk.needs_food():
+                        p["Food"]  = f"{int(blk.get_food_units())}/{int(blk.max_food_units)}"
+                    if blk.produces_waste():
+                        p["Waste"] = f"{int(blk.get_waste_units())}/{int(blk.max_waste_units)}"
+
+                # directions arrow text
+                arrows = [Defaults.DIRECTION_ICONS.get(d, "") for d in self.directions]
+                if arrows:
+                    p["Directions"] = " ".join(arrows)
+
+                if self.city_model.cache_cell_portrayal and self._is_cacheable():
+                    self._cached_portrayal = p
+
+        return p
+

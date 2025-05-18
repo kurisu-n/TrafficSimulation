@@ -46,7 +46,7 @@ class ServiceVehicleAgent(VehicleAgent):
             raise ValueError("No valid service road cell found for first block")
 
         # prevent base class from despawning when hitting our intermediate targets
-        super().__init__(custom_id, model, start_cell, target_cell)
+        super().__init__(custom_id, model, start_cell, target_cell, population_type="through", vehicle_type=self.service_type.lower())
         self.remove_on_arrival = False
 
         # state machine
@@ -141,7 +141,9 @@ class ServiceVehicleAgent(VehicleAgent):
 
     def get_portrayal(self):
         p = super().get_portrayal()
-        p["Destination Block"] = f"{self.current_block.id}, {self.current_block.block_type}" if self.current_block else "None"
-
+        p["Destination Block"] = (
+            f"{self.current_block.id}, {self.current_block.block_type}"
+            if self.current_block else "None"
+        )
         return p
 
