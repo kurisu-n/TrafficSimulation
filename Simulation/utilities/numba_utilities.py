@@ -60,3 +60,30 @@ def scan_ahead_for_obstacles_jit(path_array: np.ndarray, stop_map: np.ndarray, o
         if idx_stop == 0 or idx_vehicle == 0:
             break
     return idx_stop, idx_vehicle
+
+
+@njit
+def compute_approach_queue(occupancy_map: np.ndarray, lane_cells: np.ndarray):
+    queue = 0
+    for i in range(lane_cells.shape[0]):
+        x = lane_cells[i, 0]
+        y = lane_cells[i, 1]
+        queue += occupancy_map[y, x]
+    return queue
+
+@njit
+def compute_max_pressure(ns_in: np.ndarray, ns_out: np.ndarray,
+                         ew_in: np.ndarray, ew_out: np.ndarray,
+                         occupancy_map: np.ndarray):
+    ns_in_q = compute_approach_queue(occupancy_map, ns_in)
+    ns_out_q = compute_approach_queue(occupancy_map, ns_out)
+    ew_in_q = compute_approach_queue(occupancy_map, ew_in)
+    ew_out_q = compute_approach_queue(occupancy_map, ew_out)
+    ns_pressure = ns_in_q - ns_out_q
+    ew_pressure = ew_in_q - ew_out_q
+    return ns_pressure, ew_pressure
+
+@njit
+def compute_total_queue(lane_cells: np.ndarray, occupancy_map: np.ndarray):
+    return compute_approach_queue(occupancy_map, lane_cells)
+

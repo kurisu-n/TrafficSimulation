@@ -25,6 +25,12 @@ class CellAgent(Agent):
         self.position = position
         self.city_model = cast("CityModel", model)
         self.cell_type = cell_type
+
+        if self.cell_type in Defaults.ROADS:
+            self.road_type = self.cell_type
+        else :
+            self.road_type = None
+
         self.directions = []
         self.base_color = Defaults.ZONE_COLORS.get(cell_type)
 

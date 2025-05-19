@@ -6,6 +6,7 @@ from typing import List, Any
 from mesa import Model, Agent
 from mesa.space import MultiGrid
 from mesa.time import RandomActivation
+from scipy.ndimage import uniform_filter
 
 from Simulation.agents.rain import RainManager
 from Simulation.agents.vehicles.vehicle_base import VehicleAgent
@@ -90,6 +91,8 @@ class CityModel(Model):
         self._blocks_data = []
         self.step_count = 0
 
+        self._ring_road_cells = set()
+
         # trackers for quick lookup
         self.block_entrances   = []
         self.highway_entrances = []
@@ -99,10 +102,12 @@ class CityModel(Model):
         self.intersection_light_groups = []
 
 
+
         self.occupancy_map = np.zeros((self.height, self.width), dtype=np.int8)
         self.stop_map = np.zeros((self.height, self.width), dtype=np.int8)
         self.allowed_dirs_map = np.zeros((self.height, self.width), dtype=np.uint8)
         self.is_road_map = np.zeros((self.height, self.width), dtype=np.int8)
+        self.road_type_map = np.zeros_like(self.is_road_map, dtype=np.int8)
         self.intersection_map = np.zeros((self.height, self.width), dtype=np.int8)
 
         self.cell_agent_cache = {}
@@ -127,6 +132,7 @@ class CityModel(Model):
         self._remove_invalid_intersection_directions()
         self._add_entrance_directions()
         self._add_traffic_lights()
+
         self._create_intersection_light_groups()
         self._instantiate_city_blocks()
 
@@ -143,6 +149,24 @@ class CityModel(Model):
             if isinstance(agent, CellAgent):
                 agent.expand_static_portrayal()
 
+        if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM == "NEIGHBOR_RL_BATCHED":
+            from Simulation.utilities.light_group_managment.reinforcement_learning import (
+                make_policy_net, run_batched_rl_control
+            )
+            import tensorflow as tf
+
+            input_dim = 9
+            hidden = getattr(Defaults, "RL_POLICY_HIDDEN", 32)
+            lr = getattr(Defaults, "RL_LEARNING_RATE", 1e-3)
+
+            # one model & optimiser for the whole city
+            self.shared_rl_policy = make_policy_net(input_dim, hidden)
+            self.shared_optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
+
+            # hand references to every intersection group
+            for ig in self.intersection_light_groups:
+                ig.rl_policy = self.shared_rl_policy
+                ig.optimizer = self.shared_optimizer
 
         self.rains = []
         self.rain_map = np.zeros((self.height, self.width), dtype=np.int8)
@@ -374,6 +398,7 @@ class CityModel(Model):
                             band_size = (hend - hstart) + 1
                             offset = y - hstart
                             self._road_cells[(x, y)] = (hrtype, "horizontal", offset, band_size, hbdir)
+                            self._ring_road_cells.add((x, y))
                             continue
 
                     # Otherwise, treat this cell as an intersection.
@@ -1306,6 +1331,7 @@ class CityModel(Model):
                     controlled_road = self.get_cell_contents(road_block_x, road_block_y)[0]
                     controlled_road.directions = road_directions
                     controlled_road.base_color = Defaults.ZONE_COLORS.get(original_road_type)
+                    controlled_road.road_type = original_road_type
                     self.controlled_roads.append(controlled_road)
 
                     # …inside your loop or function where you have:
@@ -1609,6 +1635,22 @@ class CityModel(Model):
         """Caches all agents for quick access by (x,y) position."""
         for content, (x, y) in self.grid.coord_iter():  # Correct unpacking
             self.cell_agent_cache[(x, y)] = content
+
+    def _update_density_map(self):
+        """
+        density_map[y,x]: κλάσμα των road cells εντός awareness_range που είναι κατειλημμένα.
+        """
+        r = Defaults.VEHICLE_AWARENESS_RANGE
+        # μετατρέπουμε σε float
+        occ = self.occupancy_map.astype(np.float32)
+        # αθροιστική ολίσθηση (μέγεθος kernel = 2r+1)
+        sum_occ = uniform_filter(occ, size=(2 * r + 1, 2 * r + 1), mode='constant', cval=0.0) * ((2 * r + 1) ** 2)
+        # αντίστοιχα count roads
+        road = self.is_road_map.astype(np.float32)
+        sum_road = uniform_filter(road, size=(2 * r + 1, 2 * r + 1), mode='constant', cval=0.0) * ((2 * r + 1) ** 2)
+        # αποφεύγουμε διαιρέσεις με το μηδέν
+        with np.errstate(divide='ignore', invalid='ignore'):
+            self.density_map = np.where(sum_road > 0, sum_occ / sum_road, 0.0)
     # -----------------------------------------------------------------------
     # Utilities
     # -----------------------------------------------------------------------
@@ -1642,11 +1684,17 @@ class CityModel(Model):
         return 0 <= x < w and 0 <= y < h
 
     def step(self):
+
+        # ----- batched RL BEFORE individual agent steps -----
+        if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM == "NEIGHBOR_RL_BATCHED":
+            from Simulation.utilities.light_group_managment.reinforcement_learning import run_batched_rl_control
+            run_batched_rl_control(self.intersection_light_groups, self.shared_rl_policy)
+        # -----------------------------------------------------
+
         self.tick_cache.clear()
         self.tick_grid = None
 
-        if Defaults.PATHFINDING_METHOD == "CUDA":
-            self.path_planner.solve_all()
+        self._update_density_map()
 
         self.schedule.step()
 
@@ -1952,9 +2000,34 @@ class CityModel(Model):
                 # Mark road-type cells
                 if cell.cell_type == "Intersection":
                     self.intersection_map[y, x] = 1
+                    self.road_type_map[y, x] = 1
 
                 if cell.cell_type in Defaults.ROAD_LIKE_TYPES:
                     self.is_road_map[y, x] = 1
+
+                    if cell.cell_type in Defaults.ROADS or cell.cell_type == "ControlledRoad":
+
+                        if cell.road_type == "R1":
+                            self.road_type_map[y, x] = 1
+                        elif cell.road_type == "R2":
+                            if cell.pos in self._ring_road_cells:
+                                self.road_type_map[y, x] = 1
+                            else:
+                                self.road_type_map[y, x] = 2
+                        elif cell.road_type == "R3":
+                            self.road_type_map[y, x] = 3
+
+                    elif cell.cell_type == "HighwayEntrance":
+                        self.road_type_map[y, x] = 1
+                    elif cell.cell_type == "HighwayExit":
+                        self.road_type_map[y, x] = 1
+                    elif cell.cell_type == "BlockEntrance":
+                        self.road_type_map[y, x] = 1
+                    elif cell.cell_type == "Intersection":
+                        self.road_type_map[y, x] = 1
+
+
+
                 # Build allowed direction bitmask if this cell defines allowed directions
                 if hasattr(cell, "directions"):
                     bits = 0

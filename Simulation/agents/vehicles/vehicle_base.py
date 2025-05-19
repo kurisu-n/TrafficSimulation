@@ -206,16 +206,17 @@ class VehicleAgent(Agent):
         stop_map         = city.stop_map           # 1 = stop-sign / red-light
         allowed_dirs_map = city.allowed_dirs_map   # bitmask of allowed flows
         is_road_map      = city.is_road_map        # 1 = this is a road cell
+        road_type_map    = city.road_type_map      # 1 = this is a road cell
+        density_map      = city.density_map
 
         # ─────────  Phase 0: back to the original path if overtaking or patching  ─────────
         if self.is_overtaking and self.pre_overtake_path:
             city = self.city_model
-            width, height = city.get_width(), city.get_height()
             # 1. Find first free merge cell on the saved original path
             merge_idx = None
             for i, cell in enumerate(self.pre_overtake_path):
                 x_m, y_m = cell
-                if city.occupancy_map[y_m, x_m] == 0:
+                if occupancy_map[y_m, x_m] == 0:
                     merge_idx = i
                     bx, by = x_m, y_m
                     break
@@ -224,10 +225,11 @@ class VehicleAgent(Agent):
                 bypass_coords = astar_numba(
                     width, height,
                     *self.pos, bx, by,
-                    city.occupancy_map, city.stop_map,
-                    city.is_road_map, city.allowed_dirs_map,
+                    occupancy_map, stop_map,
+                    is_road_map, road_type_map, allowed_dirs_map,
                     respect_awareness=Defaults.VEHICLE_RESPECT_AWARENESS,
                     awareness_range=Defaults.VEHICLE_AWARENESS_RANGE,
+                    density_map = density_map,
                     soft_obstacles=False,
                     ignore_flow=True,
                     maximum_steps=Defaults.VEHICLE_MAX_CONTRAFLOW_OVERTAKE_STEPS
@@ -240,12 +242,11 @@ class VehicleAgent(Agent):
 
         if self.is_in_stuck_detour and self.pre_stuck_detour_path:
             city = self.city_model
-            width, height = city.get_width(), city.get_height()
             # 1. Find first free merge cell on the saved original path
             merge_idx = None
             for i, cell in enumerate(self.pre_stuck_detour_path):
                 x_m, y_m = cell
-                if city.occupancy_map[y_m, x_m] == 0:
+                if occupancy_map[y_m, x_m] == 0:
                     merge_idx = i
                     bx, by = x_m, y_m
                     break
@@ -254,10 +255,11 @@ class VehicleAgent(Agent):
                 bypass_coords = astar_numba(
                     width, height,
                     *self.pos, bx, by,
-                    city.occupancy_map, city.stop_map,
-                    city.is_road_map, city.allowed_dirs_map,
+                    occupancy_map, stop_map,
+                    is_road_map, road_type_map, allowed_dirs_map,
                     respect_awareness=Defaults.VEHICLE_RESPECT_AWARENESS,
                     awareness_range=Defaults.VEHICLE_AWARENESS_RANGE,
+                    density_map=density_map,
                     soft_obstacles=False,
                     ignore_flow=True,
                     maximum_steps=Defaults.VEHICLE_MAX_CONTRAFLOW_OVERTAKE_STEPS
@@ -273,9 +275,10 @@ class VehicleAgent(Agent):
             width, height,
             start_x, start_y, goal_x, goal_y,
             occupancy_map, stop_map,
-            is_road_map, allowed_dirs_map,
+            is_road_map, road_type_map, allowed_dirs_map,
             respect_awareness=Defaults.VEHICLE_RESPECT_AWARENESS,
             awareness_range=Defaults.VEHICLE_AWARENESS_RANGE,
+            density_map=density_map,
             soft_obstacles=False,
             ignore_flow=False,
         )
@@ -287,9 +290,10 @@ class VehicleAgent(Agent):
                 width, height,
                 start_x, start_y, goal_x, goal_y,
                 occupancy_map, stop_map,
-                is_road_map, allowed_dirs_map,
+                is_road_map, road_type_map, allowed_dirs_map,
                 respect_awareness=Defaults.VEHICLE_RESPECT_AWARENESS,
                 awareness_range=Defaults.VEHICLE_AWARENESS_RANGE,
+                density_map=density_map,
                 soft_obstacles=True,
                 ignore_flow=False,
             )
@@ -327,9 +331,10 @@ class VehicleAgent(Agent):
                             width, height,
                             start_x, start_y, bx, by,
                             occupancy_map, stop_map,
-                            is_road_map, allowed_dirs_map,
+                            is_road_map, road_type_map, allowed_dirs_map,
                             respect_awareness=Defaults.VEHICLE_RESPECT_AWARENESS,
                             awareness_range=Defaults.VEHICLE_AWARENESS_RANGE,
+                            density_map=density_map,
                             soft_obstacles=False,
                             ignore_flow=True,
                             maximum_steps=Defaults.VEHICLE_MAX_CONTRAFLOW_OVERTAKE_STEPS
@@ -375,11 +380,13 @@ class VehicleAgent(Agent):
                     tx, ty = bypass_target
                     # compute bypass path ignoring dynamic obstacles
                     bypass_coords = astar_numba(
-                        city.get_width(), city.get_height(),
+                        width, height,
                         *self.pos, tx, ty,
-                        occupancy_map, stop_map, is_road_map, allowed_dirs_map,
+                        occupancy_map, stop_map,
+                        is_road_map, road_type_map, allowed_dirs_map,
                         respect_awareness=Defaults.VEHICLE_RESPECT_AWARENESS,
                         awareness_range=Defaults.VEHICLE_AWARENESS_RANGE,
+                        density_map=density_map,
                         soft_obstacles=True,
                         ignore_flow=True,
                         maximum_steps=Defaults.VEHICLE_MAX_CONTRAFLOW_STUCK_DETOUR_STEPS

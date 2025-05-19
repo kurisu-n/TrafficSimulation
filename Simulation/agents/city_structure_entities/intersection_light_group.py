@@ -3,14 +3,21 @@ from typing import Dict, List, Set, cast, TYPE_CHECKING, Optional
 from mesa import Agent
 from Simulation.config import Defaults
 from Simulation.utilities.general import *
+from Simulation.utilities.numba_utilities import compute_max_pressure, compute_approach_queue, compute_total_queue
 
 if TYPE_CHECKING:
     from Simulation.city_model import CityModel
     from Simulation.agents.city_structure_entities.cell import CellAgent
 
-if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM == "NEIGHBOR_RL":
-    from Simulation.utilities.light_group_managment.reinforcement_learning import make_policy_net, run_rl_control
+if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM.startswith("NEIGHBOR_RL"):
+    from Simulation.utilities.light_group_managment.reinforcement_learning import (
+        make_policy_net,     # only used by NEIGHBOR_RL
+        run_rl_control,      # single-agent
+        run_batched_rl_control,   # batched (called from CityModel)
+    )
     import tensorflow as tf
+
+import numpy as np
 
 
 class IntersectionLightGroup(Agent):
@@ -56,22 +63,60 @@ class IntersectionLightGroup(Agent):
         self._nc_gap_timer: int = 0
         self._nc_last_arrival: int = 0
 
-
         if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM == "NEIGHBOR_RL":
-            input_dim = 7  # [p_ns,p_ew,avg_n_ns,avg_n_ew] + phase bit + t_norm
-            hidden = getattr(Defaults, 'RL_POLICY_HIDDEN', 16)
-            lr = getattr(Defaults, 'RL_LEARNING_RATE', 1e-3)
-            self.rl_policy = make_policy_net(input_dim, hidden)
+            # each agent owns its own network
+            input_dim = 9
+            hidden = getattr(Defaults, "RL_POLICY_HIDDEN", 32)
+            lr = getattr(Defaults, "RL_LEARNING_RATE", 1e-3)
+            self.rl_policy = make_policy_net(input_dim, hidden)  # on GPU if available
             self.optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
             self.memory: list = []
-            # RL phase pointer & timer
-            self._rl_phase: int = 0
-            self._rl_timer: int = 0
+            self._rl_phase = 0
+            self._rl_timer = 0
+
+        elif Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM == "NEIGHBOR_RL_BATCHED":
+            # placeholders – CityModel will attach shared policy/optimizer later
+            self.rl_policy = None  # will be set to shared model
+            self.optimizer = None
+            self.memory = []
+            self._rl_phase = 0
+            self._rl_timer = 0
+
+        self.ns_in_coords = []
+        self.ns_out_coords = []
+        self.ew_in_coords = []
+        self.ew_out_coords = []
+
+        self.initialize_cached_lane_coords()
 
         if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM != "DISABLED":
             self.apply_phase(self._ft_phase)
 
+    def initialize_cached_lane_coords(self):
+        """
+        Extract and store lane cell coordinates for each signal direction
+        as NumPy arrays for fast JIT access.
+        """
 
+        for tl in self.traffic_lights:
+            for rb in tl.assigned_road_blocks:  # ← controlled lane cells
+                x, y = rb.position
+                if "N" in rb.directions or "S" in rb.directions:
+                    if y < tl.position[1]:
+                        self.ns_in_coords.append((x, y))
+                    else:
+                        self.ns_out_coords.append((x, y))
+                elif "E" in rb.directions or "W" in rb.directions:
+                    if x < tl.position[0]:
+                        self.ew_in_coords.append((x, y))
+                    else:
+                        self.ew_out_coords.append((x, y))
+
+        # Convert to NumPy arrays with fixed dtype
+        self.ns_in_coords = np.array(self.ns_in_coords, dtype=np.int32)
+        self.ns_out_coords = np.array(self.ns_out_coords, dtype=np.int32)
+        self.ew_in_coords = np.array(self.ew_in_coords, dtype=np.int32)
+        self.ew_out_coords = np.array(self.ew_out_coords, dtype=np.int32)
     # ------------------------------------------------------------------
     # Link discovery
     # ------------------------------------------------------------------
@@ -316,6 +361,9 @@ class IntersectionLightGroup(Agent):
                 self.run_neighbor_green_wave()
             elif algo == "NEIGHBOR_RL":
                 run_rl_control(self)
+            elif algo == "NEIGHBOR_RL_BATCHED":
+                # decision handled centrally in CityModel → do nothing here
+                pass
 
 
         self._execute_phase_change()
@@ -338,51 +386,48 @@ class IntersectionLightGroup(Agent):
             self._ft_phase = 1 - self._ft_phase  # Toggle between 0↔1
             self.fixed_time_timer = 0
 
+    @staticmethod
+    def to_int32(arr):
+        arr = np.asarray(arr, dtype=np.int32)
+        return np.ascontiguousarray(arr.reshape((-1, 2)), dtype=np.int32)
+
+    def run_pressure_control(self):
+        occ_map = self.city_model.occupancy_map.astype(np.int32)
+        ns_pressure, ew_pressure = compute_max_pressure(
+            self.to_int32(self.ns_in_coords), self.to_int32(self.ns_out_coords),
+            self.to_int32(self.ew_in_coords), self.to_int32(self.ew_out_coords),
+            self.to_int32(occ_map)
+        )
+        self.ns_pressure = ns_pressure
+        self.ew_pressure = ew_pressure
+
+        if ns_pressure > ew_pressure:
+            self.apply_phase(0)
+        else:
+            self.apply_phase(1)
 
     def run_queue_actuated(self):
-        """
-        Queue-actuated: stays green at least min_green,
-        gaps out after no arrivals for gap ticks,
-        forced switch at max_green,
-        uses global apply_phase for transitions.
-        """
         self.queue_timer += 1
+        occ = self.city_model.occupancy_map.astype(np.int32)
 
-        # count vehicles on N–S vs E–W approaches
-        ns_cells, ew_cells = self.get_opposite_traffic_lights().values()
-        occ = self.city_model.occupancy_map
-        ns_queue = sum(
-            1
-            for tl in ns_cells
-            for x, y in (rb.position for rb in tl.assigned_road_blocks)
-            if occ[y, x]
-        )
-        ew_queue = sum(
-            1
-            for tl in ew_cells
-            for x, y in (rb.position for rb in tl.assigned_road_blocks)
-            if occ[y, x]
-        )
+        ns_q = compute_approach_queue(occ, self.to_int32(self.ns_in_coords))
+        ew_q = compute_approach_queue(occ, self.to_int32(self.ew_in_coords))
 
-        # determine current vs opposite queue based on actual phase
         if self.current_phase == 0:
-            current_q, opp_q = ns_queue, ew_queue
+            current_q, opp_q = ns_q, ew_q
         else:
-            current_q, opp_q = ew_queue, ns_queue
+            current_q, opp_q = ew_q, ns_q
 
-        # on start of new green cycle, init arrival tracking
         if self.queue_timer == 1:
             self.last_arrival = current_q
             self.gap_timer = 0
 
-        # update gap timer
         if current_q > self.last_arrival:
             self.last_arrival = current_q
             self.gap_timer = 0
         else:
             self.gap_timer += 1
 
-        # decide to switch after at least min_green
         if (
             self.queue_timer >= Defaults.TRAFFIC_LIGHT_QUEUE_ACTUATED_MIN_GREEN and (
                 self.gap_timer >= Defaults.TRAFFIC_LIGHT_QUEUE_ACTUATED_GAP or
@@ -394,134 +439,57 @@ class IntersectionLightGroup(Agent):
             self.apply_phase(next_phase)
             self.queue_timer = 0
 
-    def run_pressure_control(self):
-        """
-        Pressure-based control: compares local vs neighbor pressure
-        and requests the phase with higher demand.
-        """
-        occ_map = self.city_model.occupancy_map
-        ns_cells, ew_cells = self.get_opposite_traffic_lights().values()
-        local_ns = sum(
-            1 for tl in ns_cells
-            for x, y in (rb.position for rb in tl.assigned_road_blocks)
-            if occ_map[y, x]
-        )
-        local_ew = sum(
-            1 for tl in ew_cells
-            for x, y in (rb.position for rb in tl.assigned_road_blocks)
-            if occ_map[y, x]
-        )
-
-        # compute self pressure
-        self.ns_pressure = local_ns - local_ew
-        self.ew_pressure = local_ew - local_ns
-
-        # include neighbor pressures
-        sum_ns = sum_ew = count = 0
-        for neighbor in self.get_neighbor_groups().values():
-            n_ns_cells, n_ew_cells = neighbor.get_opposite_traffic_lights().values()
-            n_ns = sum(
-                1 for tl in n_ns_cells
-                for x, y in (rb.position for rb in tl.assigned_road_blocks)
-                if occ_map[y, x]
-            )
-            n_ew = sum(
-                1 for tl in n_ew_cells
-                for x, y in (rb.position for rb in tl.assigned_road_blocks)
-                if occ_map[y, x]
-            )
-            sum_ns += (n_ns - n_ew)
-            sum_ew += (n_ew - n_ns)
-            count += 1
-        if count > 0:
-            self.ns_pressure -= (sum_ns / count)
-            self.ew_pressure -= (sum_ew / count)
-
-        # decide phase: 0 = N–S, 1 = E–W
-        new_phase = 0 if self.ns_pressure >= self.ew_pressure else 1
-        if new_phase != self.current_phase:
-            self.apply_phase(new_phase)
-
     def run_neighbor_pressure_control(self):
-        """
-        Decentralized neighbor-pressure control using apply_phase()
-        after enforcing a minimum green.
-        """
-        if not hasattr(self, '_ne_timer'):
-            self._ne_timer = 0
-            self._ne_last_request = None
-        # local pressure
-        occ = self.city_model.occupancy_map
-        ns_cells, ew_cells = self.get_opposite_traffic_lights().values()
-        local_ns = sum(1 for tl in ns_cells for x,y in (rb.position for rb in tl.assigned_road_blocks) if occ[y,x])
-        local_ew = sum(1 for tl in ew_cells for x,y in (rb.position for rb in tl.assigned_road_blocks) if occ[y,x])
-        self.ns_pressure = local_ns - local_ew
-        self.ew_pressure = local_ew - local_ns
-        total_ns = self.ns_pressure
-        total_ew = self.ew_pressure
-        for nb in self.get_neighbor_groups().values():
-            total_ns += getattr(nb, 'ns_pressure', 0)
-            total_ew += getattr(nb, 'ew_pressure', 0)
-        desired = 0 if total_ns >= total_ew else 1
-        self._ne_timer += 1
-        if self._ne_last_request is None:
-            self.apply_phase(self.current_phase)
-            self._ne_last_request = self.current_phase
-        elif self._ne_timer >= Defaults.TRAFFIC_LIGHT_PRESSURE_CONTROL_MIN_GREEN and desired != self.current_phase:
-            self.apply_phase(desired)
-            self._ne_last_request = desired
-            self._ne_timer = 0
+        occ_map = self.city_model.occupancy_map.astype(np.int32)
+
+        ns_pressure, ew_pressure = compute_max_pressure(
+            self.to_int32(self.ns_in_coords), self.to_int32(self.ns_out_coords),
+            self.to_int32(self.ew_in_coords), self.to_int32(self.ew_out_coords),
+            occ_map
+        )
+
+        neighbors = self.get_neighbor_groups()
+        for d, g in neighbors.items():
+            if hasattr(g, "ns_pressure") and hasattr(g, "ew_pressure"):
+                if d in ("N", "S"):
+                    ns_pressure -= getattr(g, "ns_pressure", 0)
+                elif d in ("E", "W"):
+                    ew_pressure -= getattr(g, "ew_pressure", 0)
+
+        self.ns_pressure = ns_pressure
+        self.ew_pressure = ew_pressure
+
+        if ns_pressure > ew_pressure:
+            self.apply_phase(0)
+        else:
+            self.apply_phase(1)
 
     def run_neighbor_green_wave(self):
-        """
-        Decentralized green-wave control aligned with neighbor phases,
-        using gap, max, starvation logic and apply_phase().
-        """
-        # init timers
-        if not hasattr(self, '_nc_timer'):
-            self._nc_timer = 0
-            self._nc_gap_timer = 0
-            self._nc_last_arrival = 0
-        min_g = getattr(Defaults, 'TRAFFIC_LIGHT_MIN_GREEN', 5)
-        max_g = getattr(Defaults, 'TRAFFIC_LIGHT_MAX_GREEN', 30)
-        gap = getattr(Defaults, 'TRAFFIC_LIGHT_GAP', 3)
-        self._nc_timer += 1
-        occ = self.city_model.occupancy_map
-        ns_cells, ew_cells = self.get_opposite_traffic_lights().values()
-        ns_q = sum(1 for tl in ns_cells for x,y in (rb.position for rb in tl.assigned_road_blocks) if occ[y,x])
-        ew_q = sum(1 for tl in ew_cells for x,y in (rb.position for rb in tl.assigned_road_blocks) if occ[y,x])
-        if self.current_phase == 0:
-            current_q, opp_q = ns_q, ew_q
-        else:
-            current_q, opp_q = ew_q, ns_q
-        if current_q > self._nc_last_arrival:
-            self._nc_last_arrival = current_q
-            self._nc_gap_timer = 0
-        else:
-            self._nc_gap_timer += 1
-        score_ns, score_ew = ns_q, ew_q
-        for nb in self.get_neighbor_groups().values():
-            nb_phase = getattr(nb, 'current_phase', None)
-            if nb_phase == 0:
-                nb_ns = sum(1 for tl in nb.get_opposite_traffic_lights()["N-S"] for x,y in (rb.position for rb in tl.assigned_road_blocks) if occ[y,x])
-                score_ns += nb_ns; score_ew -= nb_ns
-            elif nb_phase == 1:
-                nb_ew = sum(1 for tl in nb.get_opposite_traffic_lights()["W-E"] for x,y in (rb.position for rb in tl.assigned_road_blocks) if occ[y,x])
-                score_ew += nb_ew; score_ns -= nb_ew
-        desired = 0 if score_ns >= score_ew else 1
-        if (
-            self._nc_timer >= min_g and (
-                self._nc_gap_timer >= gap or
-                self._nc_timer >= max_g or
-                (current_q == 0 and opp_q > 0) or
-                desired != self.current_phase
-            )
-        ):
-            self.apply_phase(desired)
-            self._nc_timer = 0
-            self._nc_gap_timer = 0
-            self._nc_last_arrival = current_q
+        occ_map = self.city_model.occupancy_map.astype(np.int32)
+        ns_q = compute_total_queue(self.to_int32(self.ns_in_coords), occ_map)
+        ew_q = compute_total_queue(self.to_int32(self.ew_in_coords), occ_map)
 
+        neighbors = self.get_neighbor_groups()
+        favor_ns = False
+        favor_ew = False
+
+        for d, g in neighbors.items():
+            if not hasattr(g, "current_phase"):
+                continue
+            if d in ("N", "S") and g.current_phase == 0:
+                favor_ns = True
+            if d in ("E", "W") and g.current_phase == 1:
+                favor_ew = True
+
+        if favor_ns and not favor_ew:
+            self.apply_phase(0)
+        elif favor_ew and not favor_ns:
+            self.apply_phase(1)
+        else:
+            if ns_q > ew_q:
+                self.apply_phase(0)
+            else:
+                self.apply_phase(1)
 
 
 
