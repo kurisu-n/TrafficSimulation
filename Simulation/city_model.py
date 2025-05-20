@@ -16,11 +16,12 @@ from Simulation.agents.city_structure_entities.city_block import CityBlock
 from Simulation.agents.city_structure_entities.intersection_light_group import IntersectionLightGroup
 from Simulation.agents.dummy import DummyAgent
 from Simulation.agents.dynamic_traffic_generator import DynamicTrafficAgent
+from Simulation.utilities.light_group_managment.rl_a2c import warmup_models
+from Simulation.utilities.light_group_managment.rl_simple import warmup_simple_rl_model
 from Simulation.utilities.numba_utilities import manhattan_distance
 
 from joblib import Parallel, delayed
 import multiprocessing
-
 
 class CityModel(Model):
     def __init__(self,
@@ -29,9 +30,11 @@ class CityModel(Model):
                  wall_thickness = Defaults.WALL_THICKNESS,
                  sidewalk_ring_width = Defaults.SIDEWALK_RING_WIDTH,
                  ring_road_type = Defaults.RING_ROAD_TYPE,
-                 allow_extra_highways = Defaults.ALLOW_EXTRA_HIGHWAYS,
-                 extra_highways_chance = Defaults.EXTRA_HIGHWAY_CHANCE,
-                 r2_r3_chance_split = Defaults.R2_R3_CHANCE_SPLIT,
+                 r1_chance_mean=Defaults.R1_CHANCE_MEAN,
+                 r1_chance_std=Defaults.R1_CHANCE_STD,
+                 r2_chance_mean=Defaults.R2_CHANCE_MEAN,
+                 r2_chance_std=Defaults.R2_CHANCE_STD,
+                 min_r1_bands=Defaults.MIN_R1_BANDS,
                  min_block_spacing = Defaults.MIN_BLOCK_SPACING,
                  max_block_spacing = Defaults.MAX_BLOCK_SPACING,
                  optimized_intersections = Defaults.OPTIMISED_INTERSECTIONS,
@@ -56,9 +59,11 @@ class CityModel(Model):
         self.sidewalk_ring_width = sidewalk_ring_width
         self.ring_road_type = ring_road_type
         self.highway_offset_from_edges = highway_offset_from_edges
-        self.allow_extra_highways = allow_extra_highways
-        self.extra_highways_chance = extra_highways_chance
-        self.r2_r3_chance_split = r2_r3_chance_split
+        self.r1_chance_mean = r1_chance_mean
+        self.r1_chance_std = r1_chance_std
+        self.r2_chance_mean = r2_chance_mean
+        self.r2_chance_std = r2_chance_std
+        self.min_r1_bands = min_r1_bands
         self.min_block_spacing = min_block_spacing
         self.max_block_spacing = max_block_spacing
         self.optimized_intersections = optimized_intersections
@@ -101,8 +106,6 @@ class CityModel(Model):
         self.traffic_lights    = []
         self.intersection_light_groups = []
 
-
-
         self.occupancy_map = np.zeros((self.height, self.width), dtype=np.int8)
         self.stop_map = np.zeros((self.height, self.width), dtype=np.int8)
         self.allowed_dirs_map = np.zeros((self.height, self.width), dtype=np.uint8)
@@ -115,6 +118,7 @@ class CityModel(Model):
         self.tick_cache = {}
         self.tick_grid = None
         self.cell_lookup = {}
+        self.active_vehicle_agents = []
 
         # build sequence
         self._place_thick_wall()
@@ -150,14 +154,14 @@ class CityModel(Model):
                 agent.expand_static_portrayal()
 
         if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM == "NEIGHBOR_RL_BATCHED":
-            from Simulation.utilities.light_group_managment.reinforcement_learning import (
+            from Simulation.utilities.light_group_managment.rl_simple import (
                 make_policy_net, run_batched_rl_control
             )
             import tensorflow as tf
 
-            input_dim = 9
-            hidden = getattr(Defaults, "RL_POLICY_HIDDEN", 32)
-            lr = getattr(Defaults, "RL_LEARNING_RATE", 1e-3)
+            input_dim = 13
+            hidden = getattr(Defaults, "RL_POLICY_HIDDEN", Defaults.SRL_HIDDEN_LAYER_SIZE)
+            lr = getattr(Defaults, "RL_LEARNING_RATE", Defaults.SRL_LEARNING_RATE)
 
             # one model & optimiser for the whole city
             self.shared_rl_policy = make_policy_net(input_dim, hidden)
@@ -167,6 +171,26 @@ class CityModel(Model):
             for ig in self.intersection_light_groups:
                 ig.rl_policy = self.shared_rl_policy
                 ig.optimizer = self.shared_optimizer
+
+            warmup_simple_rl_model(self.shared_rl_policy, self.shared_optimizer, input_dim=13)
+
+        if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM == "RL_A2C_BATCHED":
+            from Simulation.utilities.light_group_managment.rl_a2c import (
+                make_actor_critic, run_a2c_control
+            )
+            import tensorflow as tf
+            self.actor_net, self.critic_net = make_actor_critic(input_dim=13)
+            self.shared_optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4)
+            for ig in self.intersection_light_groups:
+                ig.rl_policy = self.actor_net
+
+            warmup_models(self.actor_net, self.critic_net, self.shared_optimizer, input_dim=13)
+
+        if Defaults.PATHFINDING_METHOD == "TENSORFLOW_VEC" and Defaults.PATHFINDING_BATCHING:
+            from Simulation.utilities.pathfinding.astar_tensorflow_batch import (
+                astar_tensorflow_batch,  # NEW
+                astar_tensorflow_vectorised  # keep single-vehicle fallback
+            )
 
         self.rains = []
         self.rain_map = np.zeros((self.height, self.width), dtype=np.int8)
@@ -354,16 +378,19 @@ class CityModel(Model):
         # We pass the forced initial_road value to both horizontal and vertical bands.
         self.horizontal_bands = self._make_road_bands_for_interior(
             self.interior_y_min, self.interior_y_max,
-            orientation="horizontal", allow_highway=self.allow_extra_highways, initial_road=self.ring_road_type
+            orientation="horizontal", initial_road=self.ring_road_type
         )
         self.vertical_bands = self._make_road_bands_for_interior(
             self.interior_x_min, self.interior_x_max,
-            orientation="vertical", allow_highway=self.allow_extra_highways, initial_road=self.ring_road_type
+            orientation="vertical", initial_road=self.ring_road_type
         )
 
-        # (B) Force 1 horizontal + 1 vertical R1 highway
-        self._force_one_highway(self.horizontal_bands, total_size=h)
-        self._force_one_highway(self.vertical_bands, total_size=w)
+        self._ensure_minimum_highways(
+            self.horizontal_bands, self.get_height(), self.ring_road_type
+        )
+        self._ensure_minimum_highways(
+            self.vertical_bands, self.get_width(), self.ring_road_type
+        )
 
         # (C) Place roads in the grid
         self._intersection_cells = set()
@@ -854,30 +881,85 @@ class CityModel(Model):
     # Place block entrances
     # -----------------------------------------------------------------------
     def _final_place_block_entrances(self):
+        """Place exactly one `BlockEntrance` per block, aiming for the geometric
+        midpoint of the longest sidewalk segment on the block’s perimeter.
+
+        Controlled by `BLOCK_ENTRANCE_ROAD_LEVEL`:
+            • 0 – no filtering (legacy)
+            • 1 – avoid candidates that touch only R3 roads when alternatives exist
+            • 2 – avoid candidates that touch only R3 or R2 roads when alternatives exist
+        """
+
+        import random
+
         valid_types = set(Defaults.AVAILABLE_CITY_BLOCKS)
+        lvl = getattr(Defaults, "BLOCK_ENTRANCE_ROAD_LEVEL", 0)
+        disallowed_by_lvl = [set(), {"R3"}, {"R2", "R3"}]
+        disallowed = disallowed_by_lvl[min(lvl, 2)]
 
         for info in self._blocks_data:
             if info["block_type"] not in valid_types:
                 continue
 
-            # find ring cells that touch a road
-            road_candidates = [
-                (rx, ry)
-                for (rx, ry) in info["ring"]
-                if self._touches_road((rx, ry))
-            ]
-            if not road_candidates:
-                continue
+            # 1️⃣  perimeter cells that border a road -----------------------
+            ring = [(x, y) for (x, y) in info["ring"] if self._touches_road((x, y))]
+            if not ring:
+                continue  # land-locked block – skip
 
-            # pick one, make it a BlockEntrance
-            cx, cy = random.choice(road_candidates)
+            # 2️⃣  road-level filter ----------------------------------------
+            if lvl > 0:
+                preferred = []
+                for cx, cy in ring:
+                    adj_types = set()
+                    for nx, ny in ((cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)):
+                        if self.in_bounds(nx, ny):
+                            ags = self.get_cell_contents(nx, ny)
+                            if ags and ags[0].cell_type in Defaults.ROADS:
+                                adj_types.add(ags[0].cell_type)
+                    if any(rt not in disallowed for rt in adj_types):
+                        preferred.append((cx, cy))
+                if preferred:
+                    ring = preferred
+
+            # 3️⃣  split into contiguous runs (4-neighbour) ------------------
+            ring_set = set(ring)
+            runs = []
+            while ring_set:
+                start = ring_set.pop()
+                stack = [start]
+                run = [start]
+                while stack:
+                    x, y = stack.pop()
+                    for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                        if (nx, ny) in ring_set:
+                            ring_set.remove((nx, ny))
+                            stack.append((nx, ny))
+                            run.append((nx, ny))
+                runs.append(run)
+
+            # longest run(s) → choose one, then its midpoint ----------------
+            max_len = max(len(r) for r in runs)
+            longest_runs = [r for r in runs if len(r) == max_len]
+            run = random.choice(longest_runs)
+
+            # Order cells so we can pick the central index consistently.
+            # For horizontal runs sort by x; for vertical by y. Mixed runs
+            # (rare) get sorted by (x, y).
+            if all(y == run[0][1] for _, y in run):  # horizontal
+                run.sort(key=lambda p: p[0])
+            elif all(x == run[0][0] for x, _ in run):  # vertical
+                run.sort(key=lambda p: p[1])
+            else:
+                run.sort()  # fallback
+
+            cx, cy = run[len(run) // 2]
+
+            # 4️⃣  place the entrance ---------------------------------------
             self.place_cell(cx, cy, "BlockEntrance", f"BlockEntrance_{cx}_{cy}")
-            agent = self.get_cell_contents(cx, cy)[0]
-
-            # annotate and track
-            agent.block_id   = info["block_id"]
-            agent.block_type = info["block_type"]
-            self.block_entrances.append(agent)
+            be = self.get_cell_contents(cx, cy)[0]
+            be.block_id = info["block_id"]
+            be.block_type = info["block_type"]
+            self.block_entrances.append(be)
 
 
     # -----------------------------------------------------------------------
@@ -991,7 +1073,7 @@ class CityModel(Model):
     # Road band helper
     # -----------------------------------------------------------------------
     def _make_road_bands_for_interior(self, start_coord, end_coord,
-                                      orientation, allow_highway=False, initial_road=None):
+                                      orientation, initial_road=None):
         """
         Generates road bands between start_coord and end_coord.
         If `initial_road` is provided (either "R2" or "R3"), then the first band
@@ -1013,7 +1095,7 @@ class CityModel(Model):
         # Generate bands using the random scheme.
         while current <= end_coord:
             # Choose a road type randomly.
-            rtype = self._choose_road_type(allow_highway=allow_highway)
+            rtype = self._choose_road_type()
             thick = Defaults.ROAD_THICKNESS[rtype]
             bstart = current
             bend = min(bstart + thick - 1, end_coord)
@@ -1093,26 +1175,32 @@ class CityModel(Model):
 
         return bands
 
-    def _choose_road_type(self, allow_highway=True):
-        if allow_highway:
-            r1_chance = self.extra_highways_chance
-            remaining = 1.0 - r1_chance
-            r2_chance = remaining * self.r2_r3_chance_split
-        else:
-            r1_chance = 0.0
-            r2_chance = self.r2_r3_chance_split
+    def _choose_road_type(self) -> str:
+        """
+        Returns "R1", "R2" or "R3".
+
+        • Draw p_R1  ~  N(μ₁,σ₁)  (clipped to [0,1])
+        • Draw p_R2  ~  N(μ₂,σ₂)  (clipped, but also ≤ 1-p_R1)
+        • p_R3 = 1 – p_R1 – p_R2
+        """
+        clip = lambda v: max(0.0, min(1.0, v))  # helper
+
+        p_r1 = clip(random.gauss(self.r1_chance_mean,
+                                 self.r1_chance_std))
+
+        remaining = 1.0 - p_r1
+        p_r2 = clip(min(remaining,
+                        random.gauss(self.r2_chance_mean,
+                                     self.r2_chance_std)))
+        p_r3 = 1.0 - p_r1 - p_r2  # whatever is left
 
         r = random.random()
-
-        if allow_highway:
-            if r < r1_chance:
-                return "R1"
-            elif r < r1_chance + r2_chance:
-                return "R2"
-            else:
-                return "R3"
+        if r < p_r1:
+            return "R1"
+        elif r < p_r1 + p_r2:
+            return "R2"
         else:
-            return "R2" if r < r2_chance else "R3"
+            return "R3"
 
     def _force_one_highway(self, bands, total_size):
         thick = Defaults.ROAD_THICKNESS["R1"]
@@ -1140,6 +1228,42 @@ class CityModel(Model):
                     continue
                 new_bands.append((st, en, rt, bdir))
         bands[:] = new_bands
+
+    def _ensure_minimum_highways(
+            self,
+            bands: list[tuple[int, int, str, str]],
+            total_size: int,
+            initial_road: str | None
+    ) -> None:
+        """
+        Post-process the `bands` list so there are at least
+        `self.min_r1_bands` non-ring highways (R1) on this axis.
+
+        • Uses the **original** `_force_one_highway()` each time it needs to
+          insert another highway, so the thickness is always
+          `ROAD_THICKNESS['R1']` (four lanes) and spacing rules are honoured.
+
+        • If `initial_road == "R1"` the first & last bands are the ring road
+          and are *not* counted toward the minimum.
+        """
+
+        def _non_ring_indices():
+            if initial_road == "R1" and len(bands) >= 2:
+                # skip forced first & last bands (ring road)
+                return range(1, len(bands) - 1)
+            return range(len(bands))
+
+        def _current_highway_count() -> int:
+            return sum(
+                1 for idx in _non_ring_indices()
+                if bands[idx][2] == "R1"
+            )
+
+        # keep inserting full highways until the quota is met (or we give up)
+        attempts = 0
+        while _current_highway_count() < self.min_r1_bands and attempts < 20:
+            self._force_one_highway(bands, total_size)  # ← inserts a 4-lane R1
+            attempts += 1
 
     def _find_band_covering(self, index, bands):
         for (st, en, rtype, bdir) in bands:
@@ -1683,29 +1807,56 @@ class CityModel(Model):
         w, h = self.width, self.height
         return 0 <= x < w and 0 <= y < h
 
+    def run_parallel_decide(self):
+        """
+        Execute .step_decide() for every agent that defines it using
+        a thread pool that spans all hardware threads.
+        """
+
+        if Defaults.PATHFINDING_METHOD in ("NUMBA","CYTHON"):
+            n_workers = multiprocessing.cpu_count()
+
+            agents = self.active_vehicle_agents
+            if not agents:
+                return
+
+            # Thread backend → no pickling, very low overhead
+            Parallel(n_jobs=n_workers, backend="threading", prefer="threads")(
+                delayed(lambda a: a.step_decide())(ag) for ag in agents
+            )
+        elif Defaults.PATHFINDING_METHOD == "TENSORFLOW_VEC":
+            pass
+
     def step(self):
 
         # ----- batched RL BEFORE individual agent steps -----
         if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM == "NEIGHBOR_RL_BATCHED":
-            from Simulation.utilities.light_group_managment.reinforcement_learning import run_batched_rl_control
+            from Simulation.utilities.light_group_managment.rl_simple import run_batched_rl_control
             run_batched_rl_control(self.intersection_light_groups, self.shared_rl_policy)
         # -----------------------------------------------------
+
+        if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM == "RL_A2C_BATCHED":
+            from Simulation.utilities.light_group_managment.rl_a2c import run_a2c_control
+            run_a2c_control(self.intersection_light_groups,
+                            self.actor_net,
+                            self.critic_net,
+                            self.shared_optimizer)
+
+        if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM == "GAT_DQN_BATCHED":
+            from Simulation.utilities.light_group_managment.rl_gatdqn import run_batched_gat_dqn_control
+            run_batched_gat_dqn_control(self.intersection_light_groups)
 
         self.tick_cache.clear()
         self.tick_grid = None
 
         self._update_density_map()
 
+        if Defaults.PATHFINDING_BATCHING:
+            self.run_parallel_decide()
+
         self.schedule.step()
 
         self.step_count += 1
-
-    def run_parallel_decide(self):
-        agents = list(self.schedule.agents)
-        Parallel(n_jobs=multiprocessing.cpu_count())(
-            delayed(lambda agent: agent.step_decide())(agent)
-            for agent in agents if hasattr(agent, "step_decide")
-        )
 
     # — Convenience getters —
 
@@ -1749,6 +1900,7 @@ class CityModel(Model):
         if self.use_dummy_agents:
             self.remove_dummy(pos[0], pos[1])
 
+        self.active_vehicle_agents.append(vehicle)
         self.grid.place_agent(vehicle, pos)
         self.occupancy_map[pos[1], pos[0]] = 1
         self.schedule.add(vehicle)
@@ -1769,6 +1921,7 @@ class CityModel(Model):
         self.occupancy_map[y, x] = 0
         v_pos = (x, y)
 
+        self.active_vehicle_agents.remove(vehicle)
         self.grid.remove_agent(vehicle)
         self.schedule.remove(vehicle)
 

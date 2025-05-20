@@ -66,20 +66,6 @@ def sp_key() -> str:
 # ───────────────────────── 3 · PARAMETER DICTIONARY ─────────────────────────
 model_params = {
     "_css": PARAM_PANEL_CSS,
-    # ── Grid geometry ─────────────────────────────────────────────────────
-    "_hdr_grid": h("Grid geometry"),
-    sp_key(): spacer(),
-    "width":  mesa.visualization.Slider(
-        name="Grid Width", value=Defaults.WIDTH, min_value=80, max_value=300, step=10,
-        description="Square grid size",
-    ),
-    sp_key(): spacer(),
-    "height": mesa.visualization.Slider(
-        name="Grid Height", value=Defaults.HEIGHT, min_value=80, max_value=300, step=10,
-        description="Square grid size",
-    ),
-    sp_key(): spacer(),
-
     # ── Outer frame ───────────────────────────────────────────────────────
     "_hdr_frame": h("Outer frame"),
     sp_key(): spacer(),
@@ -108,19 +94,31 @@ model_params = {
         description="Distance from grid edge to highway centre-line",
     ),
     sp_key(): spacer(),
-    "allow_extra_highways": mesa.visualization.Checkbox(
-        name="Allow Extra Highways", value=Defaults.ALLOW_EXTRA_HIGHWAYS,
-        description="Allow extra highways to be created beyond the two mandatory",
+    "r1_chance_mean": mesa.visualization.Slider(
+        name="R1 chance μ", value=Defaults.R1_CHANCE_MEAN,
+        min_value=0.0, max_value=1.0, step=0.01,
+        description="Average probability of drawing an R1 (highway) band."
     ),
-    sp_key(): spacer(),
-    "extra_highways_chance": mesa.visualization.Slider(
-        name="Extra Highway Chance", value=Defaults.EXTRA_HIGHWAY_CHANCE, min_value=0, max_value=1, step=0.05,
-        description="Probability of creating an extra highway, if option is enabled",
+    "r1_chance_std": mesa.visualization.Slider(
+        name="R1 chance σ", value=Defaults.R1_CHANCE_STD,
+        min_value=0.0, max_value=0.25, step=0.01,
+        description="Spread (std-dev) of the R1 probability each draw."
     ),
-    sp_key(): spacer(),
-    "r2_r3_chance_split": mesa.visualization.Slider(
-        name="R2/R3 Chance Split", value=Defaults.R2_R3_CHANCE_SPLIT, min_value=0, max_value=1, step=0.05,
-        description="Probability of creating an R2 instead of an R3 road. If we allow highways, the remaining chance (i.e. 1 - extra_highways_chance) is then split between R2 and R3.",
+    "r2_chance_mean": mesa.visualization.Slider(
+        name="R2 chance μ", value=Defaults.R2_CHANCE_MEAN,
+        min_value=0.0, max_value=1.0, step=0.01,
+        description="Average probability of drawing an R2 band."
+    ),
+    "r2_chance_std": mesa.visualization.Slider(
+        name="R2 chance σ", value=Defaults.R2_CHANCE_STD,
+        min_value=0.0, max_value=0.25, step=0.01,
+        description="Spread (std-dev) of the R2 probability."
+    ),
+    "min_r1_bands": mesa.visualization.Slider(
+        name="Min R1 per axis", value=Defaults.MIN_R1_BANDS,
+        min_value=0, max_value=6, step=1,
+        description="Guarantee at least this many R1 bands horizontally "
+                    "AND vertically (ring-road excluded)."
     ),
     sp_key(): spacer(),
 

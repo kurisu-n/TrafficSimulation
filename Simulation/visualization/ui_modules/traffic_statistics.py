@@ -124,7 +124,7 @@ class TrafficStatistics(TextElement):
             pct_thr = dta.cached_stats.get("percentage_created_through", 0.0)
             rem_thr = dta.cached_stats.get("remaining_through", 0)
             live_thr = dta.live_count("through")
-            errored_thr = dta.count_errored_through
+            errored_thr = dta.cached_stats.get("errored_through", 0)
 
             completed_thr = dta.count_completed_through
             total_int = dta.cached_stats.get("daily_total_internal", 0)
@@ -132,8 +132,7 @@ class TrafficStatistics(TextElement):
             pct_int = dta.cached_stats.get("percentage_created_internal", 0.0)
             rem_int = dta.cached_stats.get("remaining_internal", 0)
             live_int = dta.live_count("internal")
-            errored_int = dta.count_errored_internal
-
+            errored_int = dta.cached_stats.get("errored_internal", 0)
             completed_int = dta.cached_stats.get("count_completed_internal", 0)
 
             # Service: Food
@@ -141,6 +140,7 @@ class TrafficStatistics(TextElement):
             created_food = dta.cached_stats.get("created_service_food", 0)
             rem_food = dta.cached_stats.get("remaining_service_food", 0)
             live_food = dta.cached_stats.get("live_service_food", 0)  # or use live_count("service_food")
+
             eta_food = fmt_time(dta.cached_stats.get("eta_service_food", 0.0))
 
             # Service: Waste
@@ -155,6 +155,8 @@ class TrafficStatistics(TextElement):
             parked = dta.cached_stats.get("parked", 0)
             overtaking = dta.cached_stats.get("overtaking", 0)
             stuck = dta.cached_stats.get("stuck", 0)
+            live_average_stuck_duration = dta.cached_stats.get("live_average_stuck_duration", 0.0)
+            live_max_stuck_duration = dta.cached_stats.get("max_stuck_duration", 0.0)
             stuck_detouring = dta.cached_stats.get("stuck_detour", 0)
 
             traffic_section = f'''
@@ -206,6 +208,8 @@ class TrafficStatistics(TextElement):
                 <div class="stat-block">Parked {parked}</div>
                 <div class="stat-block">Overtaking {overtaking}</div>
                 <div class="stat-block">Stuck {stuck}</div>
+                <div class="stat-block">Avg Stuck Duration {fmt_time(live_average_stuck_duration)}</div>
+                <div class="stat-block">Max Stuck Duration {fmt_time(live_max_stuck_duration)}</div>
                 <div class="stat-block">Detouring {stuck_detouring}</div>
 
                 <h4>Weather Status</h4>
@@ -216,22 +220,45 @@ class TrafficStatistics(TextElement):
         metrics_section = ''
         if Defaults.SHOW_METRICS_STATISTICS:
 
-            avg_dur_thr_s = fmt_time(dta.cached_stats.get("avg_duration_through", 0.0))
-            avg_dur_int_s = fmt_time(dta.cached_stats.get("avg_duration_internal", 0.0))
-            avg_tu_thr = fmt_time(dta.cached_stats.get("avg_time_per_unit_through", 0.0))
-            avg_tu_int = fmt_time(dta.cached_stats.get("avg_time_per_unit_internal", 0.0))
+            avg_dur_thr_completed = fmt_time(dta.cached_stats.get("avg_duration_through_completed", 0.0))
+            avg_dur_thr_live = fmt_time(dta.cached_stats.get("avg_duration_through_live", 0.0))
+            avg_dur_thr_total = fmt_time(dta.cached_stats.get("avg_duration_through_total", 0.0))
+
+            avg_dur_int_completed = fmt_time(dta.cached_stats.get("avg_duration_internal_completed", 0.0))
+            avg_dur_int_live = fmt_time(dta.cached_stats.get("avg_duration_internal_live", 0.0))
+            avg_dur_int_total = fmt_time(dta.cached_stats.get("avg_duration_internal_total", 0.0))
+
+            avg_tu_thr_completed = fmt_time(dta.cached_stats.get("avg_time_per_unit_through_completed", 0.0))
+            avg_tu_thr_live = fmt_time(dta.cached_stats.get("avg_time_per_unit_through_live", 0.0))
+            avg_tu_thr_total = fmt_time(dta.cached_stats.get("avg_time_per_unit_through_total", 0.0))
+
+            avg_tu_int_completed = fmt_time(dta.cached_stats.get("avg_time_per_unit_internal_completed", 0.0))
+            avg_tu_int_live = fmt_time(dta.cached_stats.get("avg_time_per_unit_internal_live", 0.0))
+            avg_tu_int_total = fmt_time(dta.cached_stats.get("avg_time_per_unit_internal_total", 0.0))
+
             avg_daily_diff = dta.cached_stats.get("avg_daily_difference", 0.0)
+
             metrics_section = f'''
         <div id="stats-grid">
           <div class="stat-category">
             <h4>Total Through Statistics</h4>
-            <div class="stat-block">Avg Through Duration: {avg_dur_thr_s}</div>
-            <div class="stat-block">Avg Time/Unit Through: {avg_tu_thr}</div>
+            <div class="stat-block">Duration Completed: {avg_dur_thr_completed}</div>
+            <div class="stat-block">Duration Live: {avg_dur_thr_live}</div>
+            <div class="stat-block">Duration Total: {avg_dur_thr_total}</div>
+            
+            <div class="stat-block">Time/Block Completed: {avg_tu_thr_completed}</div>
+            <div class="stat-block">Time/Block Live: {avg_tu_thr_live}</div>
+            <div class="stat-block">Time/Block Total: {avg_tu_thr_total}</div>
           </div>
           <div class="stat-category">
             <h4>Total Inside Statistics</h4>
-            <div class="stat-block">Avg Inside Duration: {avg_dur_int_s}</div>
-            <div class="stat-block">Avg Time/Unit Inside: {avg_tu_int}</div>
+            <div class="stat-block">Duration Completed: {avg_dur_int_completed}</div>
+            <div class="stat-block">Duration Live: {avg_dur_int_live}</div>
+            <div class="stat-block">Duration Total: {avg_dur_int_total}</div>
+            
+            <div class="stat-block">Time/Block Completed: {avg_tu_int_completed}</div>
+            <div class="stat-block">Time/Block Live: {avg_tu_int_live}</div>
+            <div class="stat-block">Time/Block Total: {avg_tu_int_total}</div>
           </div>
           <div class="stat-category">
             <h4>Daily Statistics</h4>

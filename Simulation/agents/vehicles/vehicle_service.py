@@ -30,27 +30,12 @@ class ServiceVehicleAgent(VehicleAgent):
         self.current_load = self.max_load if service_type == "Food" else 0.0
         self.city_model = cast("CityModel", model)
 
-        # choose first block
-        self.current_block: Optional[CityBlock] = (
-            self.city_model.get_block_most_in_need_of_food()
-            if service_type == "Food"
-            else self.city_model.get_block_most_in_need_of_waste_pickup()
-        )
-        # find the road‐cell to go to
-        target_cell = (
-            self.current_block.get_service_road_cell(model)
-            if self.current_block
-            else None
-        )
-        if target_cell is None:
-            raise ValueError("No valid service road cell found for first block")
+        target_cell = self._find_initial_target()
 
         # prevent base class from despawning when hitting our intermediate targets
         super().__init__(custom_id, model, start_cell, target_cell, population_type="through", vehicle_type=self.service_type.lower())
         self.remove_on_arrival = False
-
         # state machine
-        self.phase = "to_block"       # or "servicing", "to_exit"
         self.service_ticks = 0
 
     def step(self):
@@ -71,6 +56,30 @@ class ServiceVehicleAgent(VehicleAgent):
         else:
             # must be heading for exit → let base class despawn us
             super().on_target_reached()
+
+    def _find_initial_target(self):
+        target_cell = None
+        attempt = 0
+        valid_blocks = self.city_model.get_blocks_needing_food() if self.service_type == "Food" else self.city_model.get_blocks_producing_waste()
+        valid_blocks_count = len(valid_blocks)
+        while target_cell is None and attempt < valid_blocks_count:
+            self.current_block: Optional[CityBlock] = valid_blocks[attempt]
+            # find the road‐cell to go to
+            target_cell = (
+                self.current_block.get_service_road_cell(self.city_model)
+                if self.current_block
+                else None
+            )
+
+        if target_cell is None:
+            # no valid blocks found, so just go to the nearest highway exit
+            self.current_block = None
+            target_cell = self.city_model.get_highway_exits()[0]
+            self.phase = "to_exit"
+        else:
+            self.phase = "to_block"
+
+        return target_cell
 
     def _start_service(self):
         """Perform the actual load/unload and begin the wait timer."""
@@ -96,7 +105,7 @@ class ServiceVehicleAgent(VehicleAgent):
     def _finish_service(self):
         """After unload/load delay, clear parked status then pick next block or head for exit."""
         # ─── un‐park so we can move again ───
-        self.is_parked = False
+        self._unpark()
         more = (
             (self.service_type == "Food"  and self.current_load > 0) or
             (self.service_type == "Waste" and self.current_load < self.max_load)

@@ -7,7 +7,13 @@ from Simulation.config import Defaults
 from Simulation.agents.city_structure_entities.cell import CellAgent
 from Simulation.utilities.general import *
 from Simulation.utilities.numba_utilities import compute_direction
-from Simulation.utilities.pathfinding.astar_numba import astar_numba
+
+if Defaults.PATHFINDING_METHOD in ("NUMBA", "CYTHON"):
+    from Simulation.utilities.pathfinding.astar_numba import astar_numba as astar
+elif Defaults.PATHFINDING_METHOD == "TENSORFLOW":
+    from Simulation.utilities.pathfinding.astar_tensorflow import astar_tensorflow as astar
+elif Defaults.PATHFINDING_METHOD == "TENSORFLOW_VEC":      # ← add
+    from Simulation.utilities.pathfinding.astar_tensorflow_batch import astar_tensorflow_vectorised as astar
 
 if TYPE_CHECKING:
     from Simulation.city_model import CityModel
@@ -47,8 +53,9 @@ class VehicleAgent(Agent):
         self.stuck_detour_target: tuple[int, int] | None = None
         self.stuck_detour_duration: int = -1
 
-        self._stuck_ticks = 0
+        self.stuck_ticks = 0
 
+        self._early_exit = False
         self.is_stuck = False
         self.is_parked = False
         self.is_in_collision = False
@@ -149,8 +156,7 @@ class VehicleAgent(Agent):
             if hasattr(self.city_model, "_path_cache") and cache_key in self.city_model._path_cache:
                 return list(self.city_model._path_cache[cache_key])
 
-        if Defaults.PATHFINDING_METHOD == "NUMBA":
-            path = self._compute_path_numba()
+        path = self._compute_path_internal()
 
         # Cache path if valid and not a contraflow overtaking result
         if  use_cache and Defaults.PATHFINDING_CACHE and path and not self.is_overtaking and not self.is_in_stuck_detour:
@@ -190,7 +196,7 @@ class VehicleAgent(Agent):
 
         return list(fov_positions)
 
-    def _compute_path_numba(self) -> list[tuple[int, int]]:
+    def _compute_path_internal(self) -> list[tuple[int, int]]:
         """
         Find a path to the target using the optimized JIT-compiled A*.
         Uses static maps (allowed_dirs_map, is_road_map) cached in CityModel,
@@ -222,7 +228,7 @@ class VehicleAgent(Agent):
                     break
             # 2. If found, build FOV map and run contraflow A* to merge point
             if merge_idx is not None:
-                bypass_coords = astar_numba(
+                bypass_coords = astar(
                     width, height,
                     *self.pos, bx, by,
                     occupancy_map, stop_map,
@@ -252,7 +258,7 @@ class VehicleAgent(Agent):
                     break
             # 2. If found, build FOV map and run contraflow A* to merge point
             if merge_idx is not None:
-                bypass_coords = astar_numba(
+                bypass_coords = astar(
                     width, height,
                     *self.pos, bx, by,
                     occupancy_map, stop_map,
@@ -271,7 +277,7 @@ class VehicleAgent(Agent):
                     return bypass_path + self.pre_stuck_detour_path[merge_idx + 1:]
 
         # ───────── Phase 1: strict avoidance ─────────
-        path_coords = astar_numba(
+        path_coords = astar(
             width, height,
             start_x, start_y, goal_x, goal_y,
             occupancy_map, stop_map,
@@ -286,7 +292,7 @@ class VehicleAgent(Agent):
 
         # ───────── Phase 2: allow soft obstacles ─────────
         if not path or len(path) == 0:
-            path_coords = astar_numba(
+            path_coords = astar(
                 width, height,
                 start_x, start_y, goal_x, goal_y,
                 occupancy_map, stop_map,
@@ -327,7 +333,7 @@ class VehicleAgent(Agent):
                     if bypass_target:
                         bx, by = bypass_target
                         # compute contraflow bypass (ignore_flow=True)
-                        bypass_coords = astar_numba(
+                        bypass_coords = astar(
                             width, height,
                             start_x, start_y, bx, by,
                             occupancy_map, stop_map,
@@ -366,7 +372,7 @@ class VehicleAgent(Agent):
             else:
                 threshold = Defaults.VEHICLE_STUCK_CONTRAFLOW_THRESHOLD
 
-            stuck_generic = self._stuck_ticks >= threshold
+            stuck_generic = self.stuck_ticks >= threshold
             if stuck_generic and path:
                 # Find next free cell down the planned route
                 bypass_target = None
@@ -379,7 +385,7 @@ class VehicleAgent(Agent):
                 if bypass_target:
                     tx, ty = bypass_target
                     # compute bypass path ignoring dynamic obstacles
-                    bypass_coords = astar_numba(
+                    bypass_coords = astar(
                         width, height,
                         *self.pos, tx, ty,
                         occupancy_map, stop_map,
@@ -502,21 +508,12 @@ class VehicleAgent(Agent):
         If we’ve been in the same cell for too many ticks (and it’s not a Stop‐cell),
         force a fresh path compute (bypass cache).
         """
-        # 2) Increment if we didn’t change position
-        if self.previous_pos == self.pos and not self._is_a_stop_cell_position(self.pos):
-            self._stuck_ticks += 1
-            if self._stuck_ticks > Defaults.VEHICLE_STUCK_RECOMPUTE_THRESHOLD and not self.is_stuck:
-                self.city_model.dynamic_traffic_generator.stuck += 1
-                self.is_stuck = True
-
-        # 3) Pick threshold: intersection vs. regular road
         if self._is_at_intersection():
             thresh = Defaults.VEHICLE_STUCK_RECOMPUTE_THRESHOLD_INTERSECTION
         else:
             thresh = Defaults.VEHICLE_STUCK_RECOMPUTE_THRESHOLD
 
-        # 4) If we’ve exceeded the threshold, replan immediately
-        if self._stuck_ticks >= thresh:
+        if self.stuck_ticks >= thresh:
             self.path = self._compute_path(use_cache=False)
 
     DIR_LOOKUP = ["N", "E", "S", "W"]
@@ -528,11 +525,11 @@ class VehicleAgent(Agent):
         if dir_idx != -1:
             self.direction = self.DIR_LOOKUP[dir_idx]
 
-        if self._stuck_ticks > 0:
-            if self._stuck_ticks >= Defaults.VEHICLE_STUCK_RECOMPUTE_THRESHOLD and self.is_stuck:
+        if self.stuck_ticks > 0:
+            if self.is_stuck:
                 self.city_model.dynamic_traffic_generator.stuck -= 1
                 self.is_stuck = False
-            self._stuck_ticks = 0
+            self.stuck_ticks = 0
 
     def _set_collision(self, ticks: int):
         """Mark the vehicle stranded due to a collision."""
@@ -616,26 +613,33 @@ class VehicleAgent(Agent):
     #  STEP  (public) – orchestrates one simulation tick
     # ════════════════════════════════════════════════════════════
 
-    def step(self):
-        """Advance the vehicle one tick, obeying traffic rules and lights."""
+    def step_decide(self):
+        self._early_exit = False
+
         # 0) Stranded / malfunction checks
         if self._tick_stranded():
             self.base_speed = 0
             self.current_speed = 0
+            self._early_exit = True
             return
         self._check_malfunction()
         if self.is_stranded():
             self.base_speed = 0
             self.current_speed = 0
+            self._early_exit = True
+
             return
         self._check_sideswipe_collision()
         if self.is_stranded():
             self.base_speed = 0
             self.current_speed = 0
+            self._early_exit = True
+
             return
         if self._is_at_stopped_cell():
             self.base_speed = 0
             self.current_speed = 0
+            self._early_exit = True
             return
 
         # 1) Compute current speed
@@ -653,33 +657,52 @@ class VehicleAgent(Agent):
             self.base_speed = 0
             if self.pos == self.target.get_position():
                 self.on_target_reached()
+            self._early_exit = True
             return
 
-        # 5) Execute movement
-        moved_this_tick = False
+        self._early_exit = False
+
+
+    def step(self):
+        """Advance the vehicle one tick, obeying traffic rules and lights."""
+
+        if not Defaults.PATHFINDING_BATCHING:
+            self.step_decide()
+
+        if self._early_exit:
+            self._early_exit = False
+            self.tick_stuck()
+            return
+
+
         self._execute_movement(self.max_steps)
-        moved_this_tick = True
+        # moved_this_tick = True
 
-        # 6) If we couldn’t move and path is empty, plan a fresh path
-        if not moved_this_tick and (not self.path or len(self.path) == 0):
-            self.path = self._compute_path()
+        # if not moved_this_tick and (not self.path or len(self.path) == 0):
+        #     self.path = self._compute_path()
 
-        # 7) Save for next‐tick stuck detection
         self.previous_pos = self.pos
 
-        # 8) Arrival callback
         if self.pos == self.target.get_position():
             self.on_target_reached()
 
-        if (Defaults.VEHICLE_STUCK_DESPAWN_ENABLED and
-                (self._stuck_ticks > (Defaults.VEHICLE_STUCK_DESPAWN_THRESHOLD_INTERSECTION if self._is_at_intersection() else Defaults.VEHICLE_STUCK_DESPAWN_THRESHOLD))):
-            if self.population_type == "internal":
-                self.city_model.dynamic_traffic_generator.count_errored_internal += 1
-            else:
-                self.city_model.dynamic_traffic_generator.count_errored_through += 1
-            self._despawn()
-            return
+        self._despawn_check()
 
+    def tick_stuck(self):
+        if self.previous_pos == self.pos and not self._is_a_stop_cell_position(self.pos):
+            self.stuck_ticks += 1
+            if self.stuck_ticks > Defaults.VEHICLE_STUCK_RECOMPUTE_THRESHOLD and not self.is_stuck:
+                self.city_model.dynamic_traffic_generator.stuck += 1
+                self.is_stuck = True
+
+    def _despawn_check(self):
+        despawn_threshold = Defaults.VEHICLE_STUCK_DESPAWN_THRESHOLD_INTERSECTION if self._is_at_intersection() else Defaults.VEHICLE_STUCK_DESPAWN_THRESHOLD
+        if Defaults.VEHICLE_STUCK_DESPAWN_ENABLED and self.stuck_ticks >= despawn_threshold:
+            if self.population_type == "internal":
+                self.city_model.dynamic_traffic_generator.errored_internal += 1
+            else:
+                self.city_model.dynamic_traffic_generator.errored_through += 1
+            self._despawn()
     # ------------------------------------------------------------
     #  STEP helper methods (private)
     # ------------------------------------------------------------
@@ -756,9 +779,15 @@ class VehicleAgent(Agent):
 
     def _park(self) -> None:
         """Leave the vehicle in place but mark it as inactive."""
-        self.is_parked = True
-        self.city_model.dynamic_traffic_generator.parked += 1
+        if not self.is_parked:
+            self.is_parked = True
+            self.city_model.dynamic_traffic_generator.parked += 1
         pass
+
+    def _unpark(self) -> None:
+        if self.is_parked:
+            self.is_parked = False
+            self.city_model.dynamic_traffic_generator.parked -= 1
 
     def _get_base_color(self):
         if self.is_overtaking or self.is_in_stuck_detour:
@@ -823,8 +852,8 @@ class VehicleAgent(Agent):
             if self.is_in_malfunction: flags.append("Malfunctioning")
             if self.is_in_collision:   flags.append("InCollision")
             if self.is_parked:         flags.append("Parked")
-            if self._stuck_ticks > 0:
-                flags.append(f"Stuck ({self._stuck_ticks})")
+            if self.stuck_ticks > 0:
+                flags.append(f"Stuck ({self.stuck_ticks})")
 
             p["Status"] = ", ".join(flags) if flags else "Ok"
 

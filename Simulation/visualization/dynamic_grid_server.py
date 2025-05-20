@@ -1,6 +1,7 @@
 from mesa.visualization.modules import CanvasGrid
 from mesa_viz_tornado.ModularVisualization import ModularServer
 
+from Simulation.config import Defaults
 from Simulation.utilities.general import cleanup_empty_results
 from Simulation.visualization.model_parameters import model_params
 
@@ -10,8 +11,8 @@ class DynamicGridServer(ModularServer):
 
         cleanup_empty_results()
         # 1) Pull the current slider values
-        new_w = model_params["width"].value
-        new_h = model_params["height"].value
+        new_w = Defaults.WIDTH
+        new_h = Defaults.HEIGHT
 
         # 2) Update any CanvasGrid in-place
         for elem in self.visualization_elements:

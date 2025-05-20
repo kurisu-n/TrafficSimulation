@@ -15,6 +15,23 @@ from Simulation.agents.city_structure_entities.cell import CellAgent
 if TYPE_CHECKING:  # avoid circular at runtime
     from Simulation.city_model import CityModel
 
+_STAT_HEADERS = [
+    # timeline index placeholder written at runtime ↓
+    #       unit | tick | day …
+    # averages
+    "avg_duration_internal_completed", "avg_duration_through_completed",
+    "avg_time_per_unit_internal_completed", "avg_time_per_unit_through_completed",
+    "avg_duration_internal_live",  "avg_duration_through_live",
+    "avg_time_per_unit_internal_live",  "avg_time_per_unit_through_live",
+    "avg_duration_internal_total", "avg_duration_through_total",
+    "avg_time_per_unit_internal_total", "avg_time_per_unit_through_total",
+    "avg_daily_difference",
+
+    "created_through", "remaining_through", "live_through", ""
+    "created_internal",  "remaining_internal", "live_internal",
+    "collisions", "malfunctions", "parked", "overtaking", "stuck", "in_stuck_detour"
+]
+
 # ──────────────────────────────────────────────────────────────────────
 #  Helper dataclass for scheduled spawns
 # ──────────────────────────────────────────────────────────────────────
@@ -90,12 +107,12 @@ class DynamicTrafficAgent(Agent):
         self.total_duration_internal = 0.0
         self.count_completed_internal = 0
         self.total_distance_internal = 0.0
-        self.count_errored_internal = 0
+        self.errored_internal = 0
 
         self.total_duration_through = 0.0
         self.count_completed_through = 0
         self.total_distance_through = 0.0
-        self.count_errored_through = 0
+        self.errored_through = 0
 
         self.daily_finished_internal = 0
         self.daily_finished_through = 0
@@ -386,10 +403,8 @@ class DynamicTrafficAgent(Agent):
             # increment before spawning
             if trip.kind == "internal":
                 self.created_internal += 1
-                self.live_internal    += 1
             else:
                 self.created_through += 1
-                self.live_through += 1
 
             vid = f"V_{int(trip.depart_secs):06d}_{random.randint(0, 9999):04d}"
             VehicleAgent(
@@ -404,12 +419,10 @@ class DynamicTrafficAgent(Agent):
         # Service vehicles
         if trip.kind == "service_food":
             self.created_service_food += 1
-            self.live_service_food    += 1
             pool = self.sv_food_ids
             sv_type = "Food"
         else:  # service_waste
             self.created_service_waste += 1
-            self.live_service_waste    += 1
             pool = self.sv_waste_ids
             sv_type = "Waste"
 
@@ -467,12 +480,7 @@ class DynamicTrafficAgent(Agent):
             f"{self.run_ts}_snapshot_statistics_{val}_{unit}.csv"
         )
         # write header: first column named after the unit
-        headers = [unit,
-                   "avg_duration_internal",
-                   "avg_duration_through",
-                   "avg_time_per_unit_internal",
-                   "avg_time_per_unit_through",
-                   "avg_daily_difference"]
+        headers = [unit] + _STAT_HEADERS
         with open(self.snapshot_path, "w") as f:
             f.write(",".join(headers) + "\n")
 
@@ -482,23 +490,13 @@ class DynamicTrafficAgent(Agent):
             return
 
         if self._cached_stats_dirty:
-            self._update_cached_stats()
+            self._update_cached_stats(True)
             self._cached_stats_dirty = False
 
         if self.elapsed >= self._next_total_snapshot:
             with open(self.totals_path, "w") as f:
-                f.write(
-                    "avg_duration_internal,avg_duration_through,"
-                    "avg_time_per_unit_internal,avg_time_per_unit_through,"
-                    "avg_daily_difference\n"
-                )
-                f.write(
-                    f"{self.cached_stats.get('avg_duration_internal', 0.0)},"
-                    f"{self.cached_stats.get('avg_duration_through', 0.0)},"
-                    f"{self.cached_stats.get('avg_time_per_unit_internal', 0.0)},"
-                    f"{self.cached_stats.get('avg_time_per_unit_through', 0.0)},"
-                    f"{self.cached_stats.get('avg_daily_difference', 0.0)}\n"
-                )
+                f.write(",".join(_STAT_HEADERS) + "\n")
+                f.write(",".join(str(self.cached_stats.get(k, 0.0)) for k in _STAT_HEADERS) + "\n")
             self._next_total_snapshot += self._total_interval
 
     def _maybe_save_individual(self):
@@ -507,7 +505,7 @@ class DynamicTrafficAgent(Agent):
             return
 
         if self._cached_stats_dirty:
-            self._update_cached_stats()
+            self._update_cached_stats(True)
             self._cached_stats_dirty = False
 
         if self.elapsed >= self._next_indiv_snapshot:
@@ -515,44 +513,100 @@ class DynamicTrafficAgent(Agent):
             secs_per_unit = {"hours": 3600, "minutes": 60, "seconds": 1}[unit]
             idx = int(self._next_indiv_snapshot / secs_per_unit)
 
-            row = [
-                str(idx),
-                f"{self.cached_stats.get('avg_duration_internal', 0.0)}",
-                f"{self.cached_stats.get('avg_duration_through', 0.0)}",
-                f"{self.cached_stats.get('avg_time_per_unit_internal', 0.0)}",
-                f"{self.cached_stats.get('avg_time_per_unit_through', 0.0)}",
-                f"{self.cached_stats.get('avg_daily_difference', 0.0)}"
-            ]
+            row = [str(idx)] + [str(self.cached_stats.get(k, 0.0)) for k in _STAT_HEADERS]
             with open(self.snapshot_path, "a") as f:
                 f.write(",".join(row) + "\n")
 
             self._next_indiv_snapshot += self._indiv_interval
 
-    def _update_cached_stats(self):
 
-        # Average durations
-        self.cached_stats["avg_duration_internal"] = (
-            self.total_duration_internal / self.count_completed_internal
-            if self.count_completed_internal else 0.0
-        )
-        self.cached_stats["avg_duration_through"] = (
-            self.total_duration_through / self.count_completed_through
-            if self.count_completed_through else 0.0
-        )
-        self.cached_stats["avg_time_per_unit_internal"] = (
-            self.total_duration_internal / self.total_distance_internal
-            if self.total_distance_internal else 0.0
-        )
-        self.cached_stats["avg_time_per_unit_through"] = (
-            self.total_duration_through / self.total_distance_through
-            if self.total_distance_through else 0.0
-        )
+    def _update_cached_stats(self, force: bool = False):
+        # ─────────────────────────────────────────────
+        # ➊  Gather “live” vehicles  ➜  durations & dist
+        # ─────────────────────────────────────────────
+        city = cast("CityModel", self.model)
+        live_internal = []
+        live_through = []
+
+        dur_live_int = dur_live_thr = 0
+        dist_live_int = dist_live_thr = 0
+        n_live_int = n_live_thr = 0
+        average_stuck_duration = 0
+        max_stuck_duration = 0
+
+        for ag in city.schedule.agents:
+            if isinstance(ag, VehicleAgent):
+                if ag.population_type == "internal":
+                    live_internal.append(ag)
+                    dur_live_int += self.elapsed - ag.depart_time
+                    dist_live_int += ag.steps_traveled
+                    n_live_int += 1
+                elif ag.population_type == "through":
+                    live_through.append(ag)
+                    dur_live_thr += self.elapsed - ag.depart_time
+                    dist_live_thr += ag.steps_traveled
+                    n_live_thr += 1
+
+                average_stuck_duration += ag.stuck_ticks
+                max_stuck_duration = max(max_stuck_duration, ag.stuck_ticks)
+
+        self.live_average_stuck_duration = average_stuck_duration / n_live_int + n_live_thr
+        self.max_stuck_duration = max_stuck_duration
+
+        # pre-existing, completed-only tallies
+        dur_comp_int, dur_comp_thr = self.total_duration_internal, self.total_duration_through
+        dst_comp_int, dst_comp_thr = self.total_distance_internal, self.total_distance_through
+        n_comp_int, n_comp_thr = self.count_completed_internal, self.count_completed_through
+
+        # ─────────────────────────────────────────────
+        # ➋  Store every flavour side-by-side
+        # ─────────────────────────────────────────────
+        def _safe(dividend: float, divisor: float) -> float:
+            return dividend / divisor if divisor else 0.0
+
+        # ➋a  average duration  (ticks / vehicle)
+        self.cached_stats |= {
+            # completed only
+            "avg_duration_internal_completed": _safe(dur_comp_int, n_comp_int),
+            "avg_duration_through_completed": _safe(dur_comp_thr, n_comp_thr),
+            # live only
+            "avg_duration_internal_live": _safe(dur_live_int, n_live_int),
+            "avg_duration_through_live": _safe(dur_live_thr, n_live_thr),
+            # combined
+            "avg_duration_internal_total": _safe(dur_comp_int + dur_live_int,
+                                                 n_comp_int + n_live_int),
+            "avg_duration_through_total": _safe(dur_comp_thr + dur_live_thr,
+                                                n_comp_thr + n_live_thr),
+        }
+
+        # ➋b  average time per unit distance  (ticks / cell-step)
+        self.cached_stats |= {
+            # completed only
+            "avg_time_per_unit_internal_completed": _safe(dur_comp_int, dst_comp_int),
+            "avg_time_per_unit_through_completed": _safe(dur_comp_thr, dst_comp_thr),
+            # live only
+            "avg_time_per_unit_internal_live": _safe(dur_live_int, dist_live_int),
+            "avg_time_per_unit_through_live": _safe(dur_live_thr, dist_live_thr),
+            # combined
+            "avg_time_per_unit_internal_total": _safe(dur_comp_int + dur_live_int,
+                                                      dst_comp_int + dist_live_int),
+            "avg_time_per_unit_through_total": _safe(dur_comp_thr + dur_live_thr,
+                                                     dst_comp_thr + dist_live_thr),
+        }
+
+        # ➋c  (optional) keep old keys pointing at the combined figure
+        self.cached_stats["avg_duration_internal"] = self.cached_stats["avg_duration_internal_total"]
+        self.cached_stats["avg_duration_through"] = self.cached_stats["avg_duration_through_total"]
+        self.cached_stats["avg_time_per_unit_internal"] = self.cached_stats["avg_time_per_unit_internal_total"]
+        self.cached_stats["avg_time_per_unit_through"] = self.cached_stats["avg_time_per_unit_through_total"]
+
+
         self.cached_stats["avg_daily_difference"] = (
             sum(self.daily_difference_history) / len(self.daily_difference_history)
             if self.daily_difference_history else 0.0
         )
 
-        if Defaults.SHOW_TRAFFIC_STATISTICS:
+        if Defaults.SHOW_TRAFFIC_STATISTICS or force:
             self.cached_stats["count_completed_internal"] = self.count_completed_internal
 
             self.cached_stats["live_internal"] = self.live_internal
@@ -565,6 +619,8 @@ class DynamicTrafficAgent(Agent):
             self.cached_stats["parked"] = self.parked
             self.cached_stats["overtaking"] = self.overtaking
             self.cached_stats["stuck"] = self.stuck
+            self.cached_stats["live_average_stuck_duration"] = self.live_average_stuck_duration
+            self.cached_stats["live_max_stuck_duration"] = self.max_stuck_duration
             self.cached_stats["in_stuck_detour"] = self.in_stuck_detour
 
             # Daily trip statistics (direct access — no method call overhead)
@@ -577,12 +633,14 @@ class DynamicTrafficAgent(Agent):
                 created = getattr(self, f"created_{kind}")
                 remaining = total - created
                 percentage = (created / total * 100) if total else 0.0
+                errored = getattr(self, f"errored_{kind}",0.0)
                 eta = self.next_service_eta(kind)
 
                 self.cached_stats[f"daily_total_{kind}"] = total
                 self.cached_stats[f"created_{kind}"] = created
                 self.cached_stats[f"remaining_{kind}"] = remaining
                 self.cached_stats[f"percentage_created_{kind}"] = percentage
+                self.cached_stats[f"errored_{kind}"] = errored
                 self.cached_stats[f"eta_{kind}"] = eta
 
 

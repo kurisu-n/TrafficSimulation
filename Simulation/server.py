@@ -1,4 +1,6 @@
 #server.py
+import tornado.autoreload
+tornado.autoreload.start = lambda *args, **kwargs: None
 
 import socket
 from mesa.visualization.modules import CanvasGrid
@@ -14,7 +16,7 @@ from Simulation.visualization.model_parameters import model_params
 from Simulation.city_model import CityModel
 from Simulation.visualization.agent_portrayal import agent_portrayal
 
-def get_free_port(default=9525, max_tries=100):
+def get_free_port(default=9000, max_tries=100):
     for offset in range(max_tries):
         port = default + offset
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -28,8 +30,8 @@ def get_free_port(default=9525, max_tries=100):
 # Build the grid with our click handler
 canvas = CanvasGrid(
     portrayal_method = agent_portrayal,
-    grid_width       = model_params["width"].value,
-    grid_height      = model_params["height"].value,
+    grid_width       = Defaults.WIDTH,
+    grid_height      = Defaults.HEIGHT,
     canvas_height    = 1000,
     canvas_width     = 1000)
 

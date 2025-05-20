@@ -9,23 +9,31 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from Simulation.agents.city_structure_entities.intersection_light_group import IntersectionLightGroup
 
-# Configure TensorFlow threading for CPU fallback
-tf.config.threading.set_intra_op_parallelism_threads(os.cpu_count())
-tf.config.threading.set_inter_op_parallelism_threads(os.cpu_count())
-
-# Check for GPU availability
 physical_devices = tf.config.list_physical_devices('GPU')
-if physical_devices:
+if physical_devices and Defaults.CUDA_GPU_ENABLED:
     tf.config.experimental.set_memory_growth(physical_devices[0], True)
     tf_device = '/GPU:0'
 else:
     tf_device = '/CPU:0'
+    tf.config.threading.set_intra_op_parallelism_threads(os.cpu_count())
+    tf.config.threading.set_inter_op_parallelism_threads(os.cpu_count())
 
-def make_policy_net(input_dim=9, hidden=32):
+HIDDEN_LAYERS = Defaults.SRL_HIDDEN_LAYERS
+SRL_HIDDEN_LAYER_SIZE = Defaults.SRL_HIDDEN_LAYER_SIZE
+UPDATE_EVERY = Defaults.SRL_UPDATE_EVERY
+BATCH_SIZE   = Defaults.SRL_BATCH_SIZE
+DROPOUT      = Defaults.SRL_DROPOUT
+
+def make_policy_net(input_dim=13, hidden=SRL_HIDDEN_LAYER_SIZE):
     with tf.device(tf_device):
         inputs = tf.keras.Input(shape=(input_dim,), name="state")
         x = layers.Dense(hidden, activation='relu')(inputs)
-        x = layers.Dense(hidden, activation='relu')(x)
+        for _ in range(HIDDEN_LAYERS - 1):
+            x = layers.Dense(hidden, activation='relu')(x)
+
+        x = layers.LayerNormalization()(x)
+        x = layers.Dropout(DROPOUT)(x)
+
         logits = layers.Dense(2)(x)
         return tf.keras.Model(inputs=inputs, outputs=logits)
 
@@ -51,7 +59,13 @@ def get_rl_state(intersection_light_group: "IntersectionLightGroup") -> list[flo
     phase_bit = [1, 0] if intersection_light_group._rl_phase == 0 else [0, 1]
     t_norm = intersection_light_group._rl_timer / getattr(Defaults, 'TRAFFIC_LIGHT_MAX_GREEN', 30)
 
-    return [float(local_ns), float(local_ew), p_ns, p_ew, avg_n_ns, avg_n_ew] + phase_bit + [t_norm]
+    intersection_size = intersection_light_group.intersection_size
+    penalty_score = intersection_light_group.penalty_score
+
+    avg_penalty_intersection_size = sum(getattr(n, 'intersection_size', 0) for n in nbrs)/cnt
+    avg_penalty_score = sum(getattr(n, 'penalty_score', 0) for n in nbrs)/cnt
+
+    return [float(local_ns), float(local_ew), p_ns, p_ew, avg_n_ns, avg_n_ew] + phase_bit + [t_norm] + [intersection_size,penalty_score,avg_penalty_intersection_size, avg_penalty_score]
 
 def run_rl_control(intersection_light_group: "IntersectionLightGroup"):
     if not hasattr(intersection_light_group, '_rl_phase'):
@@ -89,8 +103,8 @@ def run_rl_control(intersection_light_group: "IntersectionLightGroup"):
     next_state = get_rl_state(intersection_light_group)
     intersection_light_group.memory.append((state, int(action), reward, next_state))
 
-    if len(intersection_light_group.memory) >= 128:
-        train_rl(intersection_light_group, batch_size=64)
+    if len(intersection_light_group.memory) >= UPDATE_EVERY:
+        train_rl(intersection_light_group, BATCH_SIZE)
         intersection_light_group.memory.clear()
 
 def run_batched_rl_control(intersections: list["IntersectionLightGroup"], policy_model: tf.keras.Model):
@@ -176,3 +190,14 @@ def train_rl(intersection_light_group: "IntersectionLightGroup", batch_size: int
 
         grads = tape.gradient(loss, intersection_light_group.rl_policy.trainable_variables)
         intersection_light_group.optimizer.apply_gradients(zip(grads, intersection_light_group.rl_policy.trainable_variables))
+
+def warmup_simple_rl_model(model, optimizer, input_dim=13):
+        dummy_input = tf.zeros((1, input_dim), dtype=tf.float32)
+        _ = model(dummy_input)  # build model weights
+
+        with tf.GradientTape() as tape:
+            logits = model(dummy_input)
+            loss = tf.reduce_sum(logits)  # dummy scalar
+
+        grads = tape.gradient(loss, model.trainable_variables)
+        optimizer.apply_gradients(zip(grads, model.trainable_variables))

@@ -1,4 +1,5 @@
 import random
+from collections import deque
 from typing import Dict, List, Set, cast, TYPE_CHECKING, Optional
 from mesa import Agent
 from Simulation.config import Defaults
@@ -10,10 +11,16 @@ if TYPE_CHECKING:
     from Simulation.agents.city_structure_entities.cell import CellAgent
 
 if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM.startswith("NEIGHBOR_RL"):
-    from Simulation.utilities.light_group_managment.reinforcement_learning import (
-        make_policy_net,     # only used by NEIGHBOR_RL
-        run_rl_control,      # single-agent
-        run_batched_rl_control,   # batched (called from CityModel)
+    from Simulation.utilities.light_group_managment.rl_simple import (
+        make_policy_net,  # only used by NEIGHBOR_RL
+        run_rl_control,  # single-agent
+        run_batched_rl_control, SRL_HIDDEN_LAYER_SIZE,  # batched (called from CityModel)
+)
+    import tensorflow as tf
+
+if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM in ("GAT_DQN", "GAT_DQN_BATCHED"):
+    from Simulation.utilities.light_group_managment.rl_gatdqn import (
+        make_gat_dqn_net, run_gat_dqn_control, run_batched_gat_dqn_control
     )
     import tensorflow as tf
 
@@ -63,24 +70,59 @@ class IntersectionLightGroup(Agent):
         self._nc_gap_timer: int = 0
         self._nc_last_arrival: int = 0
 
+        # --- RL parameters ---
+        self.intersection_size = len(self.intersection_cells)/16
+        types = [b.road_type for tl in self.traffic_lights for b in tl.assigned_road_blocks]
+        weights = {"R1": Defaults.VEHICLE_ROAD_TYPES_PENALTY_R1, "R2": Defaults.VEHICLE_ROAD_TYPES_PENALTY_R2,
+                   "R3": Defaults.VEHICLE_ROAD_TYPES_PENALTY_R3}
+
+        self.penalty_score = sum(weights.get(t, 0) for t in types)/len(types)
+
         if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM == "NEIGHBOR_RL":
-            # each agent owns its own network
-            input_dim = 9
-            hidden = getattr(Defaults, "RL_POLICY_HIDDEN", 32)
-            lr = getattr(Defaults, "RL_LEARNING_RATE", 1e-3)
+            input_dim = 13
+            hidden = getattr(Defaults, "RL_POLICY_HIDDEN", Defaults.SRL_HIDDEN_LAYER_SIZE)
+            lr = getattr(Defaults, "RL_LEARNING_RATE", Defaults.SRL_LEARNING_RATE)
             self.rl_policy = make_policy_net(input_dim, hidden)  # on GPU if available
             self.optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
             self.memory: list = []
             self._rl_phase = 0
             self._rl_timer = 0
-
-        elif Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM == "NEIGHBOR_RL_BATCHED":
+        elif Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM in ("NEIGHBOR_RL_BATCHED", "RL_A2C_BATCHED"):
             # placeholders – CityModel will attach shared policy/optimizer later
             self.rl_policy = None  # will be set to shared model
             self.optimizer = None
             self.memory = []
             self._rl_phase = 0
             self._rl_timer = 0
+        elif Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM in ("GAT_DQN", "GAT_DQN_BATCHED"):
+            lr = getattr(Defaults, "RL_LEARNING_RATE", 1e-3)
+            self.rl_policy = make_gat_dqn_net()  # Build policy Q-network
+            self.target_policy = make_gat_dqn_net()  # Build target Q-network
+            self.target_policy.set_weights(self.rl_policy.get_weights())  # Initialize target weights
+            self.optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
+            self.memory = deque(maxlen=10000)
+            self._rl_phase = 0
+            self._rl_timer = 0
+            self.epsilon = 1.0
+            self.train_step_count = 0
+
+            self.gat_q_func = tf.function(
+                lambda feat, mask: self.rl_policy([feat, mask]),
+                jit_compile=True
+            )
+
+            self.gat_train_func = tf.function(
+                lambda s_f, s_m, a, r, ns_f, ns_m: self.gat_agent_train_step(s_f, s_m, a, r, ns_f, ns_m),
+                input_signature=[
+                    tf.TensorSpec(shape=(None, 1 + len(Defaults.AVAILABLE_DIRECTIONS), 9), dtype=tf.float32),  # s_f
+                    tf.TensorSpec(shape=(None, 1 + len(Defaults.AVAILABLE_DIRECTIONS)), dtype=tf.float32),  # s_m
+                    tf.TensorSpec(shape=(None,), dtype=tf.int32),  # a
+                    tf.TensorSpec(shape=(None,), dtype=tf.float32),  # r
+                    tf.TensorSpec(shape=(None, 1 + len(Defaults.AVAILABLE_DIRECTIONS), 9), dtype=tf.float32),  # ns_f
+                    tf.TensorSpec(shape=(None, 1 + len(Defaults.AVAILABLE_DIRECTIONS)), dtype=tf.float32),  # ns_m
+                ],
+                jit_compile=True
+            )
 
         self.ns_in_coords = []
         self.ns_out_coords = []
@@ -362,7 +404,12 @@ class IntersectionLightGroup(Agent):
             elif algo == "NEIGHBOR_RL":
                 run_rl_control(self)
             elif algo == "NEIGHBOR_RL_BATCHED":
-                # decision handled centrally in CityModel → do nothing here
+                pass
+            elif algo == "RL_A2C_BATCHED":
+                pass
+            elif algo == "GAT_DQN":
+                run_gat_dqn_control(self)
+            elif algo == "GAT_DQN_BATCHED":
                 pass
 
 
@@ -490,6 +537,41 @@ class IntersectionLightGroup(Agent):
                 self.apply_phase(0)
             else:
                 self.apply_phase(1)
+
+
+    def gat_agent_train_step(self,
+                          s_feat: tf.Tensor,
+                          s_mask: tf.Tensor,
+                          actions: tf.Tensor,
+                          rewards: tf.Tensor,
+                          ns_feat: tf.Tensor,
+                          ns_mask: tf.Tensor):
+        """
+        One DQN update step: compute loss and apply gradients.
+        Uses self.rl_policy, self.target_policy, and self.optimizer.
+        """
+        with tf.GradientTape() as tape:
+            # Q(s,a) for taken actions
+            q_pred = self.rl_policy([s_feat, s_mask])                    # (B, num_actions)
+            act_onehot = tf.one_hot(actions, depth=q_pred.shape[-1])      # (B, num_actions)
+            q_pred_sa = tf.reduce_sum(q_pred * act_onehot, axis=1)        # (B,)
+
+            # TD target = r + γ · max_a' Q_target(s', a')
+            q_next = self.target_policy([ns_feat, ns_mask])              # (B, num_actions)
+            q_next_max = tf.reduce_max(q_next, axis=1)                   # (B,)
+            td_target = rewards + Defaults.GAT_GAMMA * q_next_max                     # (B,)
+
+            # MSE loss
+            loss = tf.reduce_mean(tf.square(q_pred_sa - tf.stop_gradient(td_target)))
+
+        # Backprop & apply
+        grads = tape.gradient(loss, self.rl_policy.trainable_variables)
+        self.optimizer.apply_gradients(zip(grads, self.rl_policy.trainable_variables))
+
+        # Sync target network periodically
+        self.train_step_count += 1
+        if self.train_step_count % Defaults.GAT_TARGET_UPDATE_EVERY == 0:
+            self.target_policy.set_weights(self.rl_policy.get_weights())
 
 
 

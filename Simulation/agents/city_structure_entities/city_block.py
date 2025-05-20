@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from typing import List, Sequence, TYPE_CHECKING
 
 from mesa import Agent
@@ -148,30 +149,56 @@ class CityBlock(Agent):
         self._update_food()
         self._update_waste()
 
-    def get_service_road_cell(self, model) -> CellAgent | None:
+    def get_service_road_cell(self, model) -> "CellAgent | None":
         """
-        Return one adjacent road cell off any block-entrance,
-        rejecting cells occupied by parked vehicles.
+        Return the nearest *free* road-cell that
+
+        • touches this block’s sidewalk ring,
+        • is *not* the road directly in front of any entrance, and
+        • has a cell_type that belongs to ``Defaults.ROADS``.
+
+        When every candidate is busy the method returns ``None``.
         """
-        for ent in self._entrances:  # list of BlockEntrance agents :contentReference[oaicite:0]{index=0}:contentReference[oaicite:1]{index=1}
-            x_e, y_e = ent.get_position()
-            # check each cardinal neighbor of the entrance
-            for _, (dx, dy) in Defaults.DIRECTION_VECTORS.items():
-                rx, ry = x_e + dx, y_e + dy
+        # 1) collect every road cell adjacent to *any* sidewalk tile
+        sidewalk_coords = [sw.get_position() for sw in self._sidewalks]
+        candidates: set[tuple[int, int]] = set()
+        for sx, sy in sidewalk_coords:
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                rx, ry = sx + dx, sy + dy
                 if not model.in_bounds(rx, ry):
                     continue
-                rcands = model.get_cell_contents(rx, ry)
-                if not rcands:
-                    continue
-                road = rcands[0]
-                if road.cell_type in Defaults.ROADS:
-                    # reject if any parked VehicleAgent is here
-                    has_parked = any(
-                        isinstance(ag, VehicleAgent) and getattr(ag, "is_parked", False)
-                        for ag in rcands[1:]
-                    )  # :contentReference[oaicite:2]{index=2}:contentReference[oaicite:3]{index=3}
-                    if not has_parked:
-                        return road
+                agents = model.get_cell_contents(rx, ry)
+                if agents and agents[0].cell_type in Defaults.ROADS:
+                    candidates.add((rx, ry))
+
+        if not candidates:
+            return None
+
+        # 2) remove the road directly in front of each entrance
+        entrance_coords = [e.get_position() for e in self._entrances]
+        for ex, ey in entrance_coords:
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                candidates.discard((ex + dx, ey + dy))
+
+        if not candidates:
+            return None
+
+        # 3) rank by shortest distance to the nearest entrance
+        ranked = sorted(
+            candidates,
+            key=lambda rc: min(abs(rc[0] - ex) + abs(rc[1] - ey)
+                               for ex, ey in entrance_coords)
+        )
+
+        # 4) return the first spot not occupied by a parked vehicle
+        from Simulation.agents.vehicles.vehicle_base import VehicleAgent  # avoid circular import
+        for rx, ry in ranked:
+            agents = model.get_cell_contents(rx, ry)
+            if any(isinstance(a, VehicleAgent) and getattr(a, "is_parked", False)
+                   for a in agents[1:]):
+                continue
+            return agents[0]          # the road CellAgent itself
+
         return None
 
 
