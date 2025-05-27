@@ -71,29 +71,25 @@ class IntersectionLightGroup(Agent):
         self._nc_last_arrival: int = 0
 
         # --- RL parameters ---
-        self.intersection_size = len(self.intersection_cells)/16
-        types = [b.road_type for tl in self.traffic_lights for b in tl.assigned_road_blocks]
-        weights = {"R1": Defaults.VEHICLE_ROAD_TYPES_PENALTY_R1, "R2": Defaults.VEHICLE_ROAD_TYPES_PENALTY_R2,
-                   "R3": Defaults.VEHICLE_ROAD_TYPES_PENALTY_R3}
-
-        self.penalty_score = sum(weights.get(t, 0) for t in types)/len(types)
+        self.intersection_size = 0
+        self.penalty_score = 0
 
         if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM == "NEIGHBOR_RL":
-            input_dim = 13
+            input_dim = Defaults.SRL_INPUT_DIMENSIONS
             hidden = getattr(Defaults, "RL_POLICY_HIDDEN", Defaults.SRL_HIDDEN_LAYER_SIZE)
             lr = getattr(Defaults, "RL_LEARNING_RATE", Defaults.SRL_LEARNING_RATE)
             self.rl_policy = make_policy_net(input_dim, hidden)  # on GPU if available
             self.optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
             self.memory: list = []
             self._rl_phase = 0
-            self._rl_timer = 0
+            self.rl_timer = 0
         elif Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM in ("NEIGHBOR_RL_BATCHED", "RL_A2C_BATCHED"):
             # placeholders – CityModel will attach shared policy/optimizer later
             self.rl_policy = None  # will be set to shared model
             self.optimizer = None
             self.memory = []
             self._rl_phase = 0
-            self._rl_timer = 0
+            self.rl_timer = 0
         elif Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM in ("GAT_DQN", "GAT_DQN_BATCHED"):
             lr = getattr(Defaults, "RL_LEARNING_RATE", 1e-3)
             self.rl_policy = make_gat_dqn_net()  # Build policy Q-network
@@ -102,27 +98,12 @@ class IntersectionLightGroup(Agent):
             self.optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
             self.memory = deque(maxlen=10000)
             self._rl_phase = 0
-            self._rl_timer = 0
+            self.rl_timer = 0
             self.epsilon = 1.0
             self.train_step_count = 0
 
-            self.gat_q_func = tf.function(
-                lambda feat, mask: self.rl_policy([feat, mask]),
-                jit_compile=True
-            )
-
-            self.gat_train_func = tf.function(
-                lambda s_f, s_m, a, r, ns_f, ns_m: self.gat_agent_train_step(s_f, s_m, a, r, ns_f, ns_m),
-                input_signature=[
-                    tf.TensorSpec(shape=(None, 1 + len(Defaults.AVAILABLE_DIRECTIONS), 9), dtype=tf.float32),  # s_f
-                    tf.TensorSpec(shape=(None, 1 + len(Defaults.AVAILABLE_DIRECTIONS)), dtype=tf.float32),  # s_m
-                    tf.TensorSpec(shape=(None,), dtype=tf.int32),  # a
-                    tf.TensorSpec(shape=(None,), dtype=tf.float32),  # r
-                    tf.TensorSpec(shape=(None, 1 + len(Defaults.AVAILABLE_DIRECTIONS), 9), dtype=tf.float32),  # ns_f
-                    tf.TensorSpec(shape=(None, 1 + len(Defaults.AVAILABLE_DIRECTIONS)), dtype=tf.float32),  # ns_m
-                ],
-                jit_compile=True
-            )
+            self.gat_q_func = self._gat_q
+            self.gat_train_func = self._gat_train_step
 
         self.ns_in_coords = []
         self.ns_out_coords = []
@@ -139,20 +120,49 @@ class IntersectionLightGroup(Agent):
         Extract and store lane cell coordinates for each signal direction
         as NumPy arrays for fast JIT access.
         """
+        self.populate_links()
+        new_method = False
+        if new_method:
+            for tl in self.traffic_lights:
+                tl = cast("CellAgent", tl)
+                for rb in tl.assigned_incoming_road_blocks:  # ← controlled lane cells
+                    x, y = rb.position
+                    if tl in self.opposite_pairs.get("N-S"):
+                            self.ns_in_coords.append((x, y))
+                    elif tl in self.opposite_pairs.get("W-E"):
+                            self.ew_in_coords.append((x, y))
+                for rb in tl.assigned_outgoing_road_blocks:  # ← controlled lane cells
+                    x, y = rb.position
+                    if tl in self.opposite_pairs.get("N-S"):
+                            self.ns_out_coords.append((x, y))
+                    elif tl in self.opposite_pairs.get("W-E"):
+                            self.ew_out_coords.append((x, y))
+        else:
+            for tl in self.traffic_lights:
+                tl = cast("CellAgent", tl)
+                for rb in tl.assigned_incoming_road_blocks + tl.assigned_outgoing_road_blocks:  # ← controlled lane cells
+                    x, y = rb.position
+                    if "N" in rb.directions or "S" in rb.directions:
+                        if y < tl.position[1]:
+                            self.ns_in_coords.append((x, y))
+                        else:
+                            self.ns_out_coords.append((x, y))
+                    elif "E" in rb.directions or "W" in rb.directions:
+                        if x < tl.position[0]:
+                            self.ew_in_coords.append((x, y))
+                        else:
+                            self.ew_out_coords.append((x, y))
 
-        for tl in self.traffic_lights:
-            for rb in tl.assigned_road_blocks:  # ← controlled lane cells
-                x, y = rb.position
-                if "N" in rb.directions or "S" in rb.directions:
-                    if y < tl.position[1]:
-                        self.ns_in_coords.append((x, y))
-                    else:
-                        self.ns_out_coords.append((x, y))
-                elif "E" in rb.directions or "W" in rb.directions:
-                    if x < tl.position[0]:
-                        self.ew_in_coords.append((x, y))
-                    else:
-                        self.ew_out_coords.append((x, y))
+        weights = {"R1": Defaults.VEHICLE_ROAD_TYPES_PENALTY_R1, "R2": Defaults.VEHICLE_ROAD_TYPES_PENALTY_R2,
+                   "R3": Defaults.VEHICLE_ROAD_TYPES_PENALTY_R3}
+
+        types = [
+            block.road_type
+            for tl in self.traffic_lights
+            for block in tl.assigned_incoming_road_blocks + tl.assigned_outgoing_road_blocks
+        ]
+        self.intersection_size = len(self.intersection_cells)/16
+        self.penalty_score = sum(weights.get(t, 0) for t in types)/len(types)
 
         # Convert to NumPy arrays with fixed dtype
         self.ns_in_coords = np.array(self.ns_in_coords, dtype=np.int32)
@@ -243,7 +253,7 @@ class IntersectionLightGroup(Agent):
                     if not self.city_model.in_bounds(nx, ny):
                         continue
                     if self.city_model.get_cell_contents(nx, ny)[0].cell_type == "Intersection" and \
-                            getattr(self.city_model.get_cell_contents(nx, ny)[0], "intersection_group", None) is self:
+                            self.city_model.get_cell_contents(nx, ny)[0].intersection_group is self:
                         axis = "vertical" if d in ("N", "S") else "horizontal"
                         axis_dirs[axis][d].append(tl)
                         break          # one direction per light is enough
@@ -291,7 +301,8 @@ class IntersectionLightGroup(Agent):
         return self.intermediate_groups
 
     def get_opposite_traffic_lights(self):
-        if self.opposite_pairs is None or self.opposite_pairs == []:
+        if (self.opposite_pairs is None or self.opposite_pairs == [] or
+            (self.opposite_pairs["N-S"] == [] and self.opposite_pairs["W-E"] == [])):
             self.populate_links()
         return self.opposite_pairs
 
@@ -347,16 +358,12 @@ class IntersectionLightGroup(Agent):
             self.set_all_stop()
             return
 
-        if Defaults.TRAFFIC_LIGHT_TRANSITION_CLEARANCE_ENABLED and self.is_intersection_occupied() and self.clearance_timer > 0:
-            self.clearance_timer -= 1
+        if Defaults.TRAFFIC_LIGHT_TRANSITION_CLEARANCE_ENABLED and self.is_intersection_occupied():
             self.set_all_stop()
             return
 
-        if Defaults.TRAFFIC_LIGHT_TRANSITION_DURATION_ENABLED:
-            self.transition_timer = Defaults.TRAFFIC_LIGHT_YELLOW_DURATION + Defaults.TRAFFIC_LIGHT_ALL_RED_DURATION
-
-        if Defaults.TRAFFIC_LIGHT_TRANSITION_CLEARANCE_ENABLED and self.is_intersection_occupied():
-            self.clearance_timer = Defaults.TRAFFIC_LIGHT_CLEARANCE_MAX_DURATION
+        if Defaults.TRAFFIC_LIGHT_TRANSITION_DURATION_ENABLED and self.clearance_timer > 0:
+            self.transition_timer = Defaults.TRAFFIC_LIGHT_ALL_RED_DURATION
 
         # Actually set green for the committed phase
         ns_lights, ew_lights = self.get_opposite_traffic_lights().values()
@@ -539,39 +546,66 @@ class IntersectionLightGroup(Agent):
                 self.apply_phase(1)
 
 
-    def gat_agent_train_step(self,
-                          s_feat: tf.Tensor,
-                          s_mask: tf.Tensor,
-                          actions: tf.Tensor,
-                          rewards: tf.Tensor,
-                          ns_feat: tf.Tensor,
-                          ns_mask: tf.Tensor):
-        """
-        One DQN update step: compute loss and apply gradients.
-        Uses self.rl_policy, self.target_policy, and self.optimizer.
-        """
-        with tf.GradientTape() as tape:
-            # Q(s,a) for taken actions
-            q_pred = self.rl_policy([s_feat, s_mask])                    # (B, num_actions)
-            act_onehot = tf.one_hot(actions, depth=q_pred.shape[-1])      # (B, num_actions)
-            q_pred_sa = tf.reduce_sum(q_pred * act_onehot, axis=1)        # (B,)
+    if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM in ("GAT_DQN", "GAT_DQN_BATCHED"):
+        def gat_agent_train_step(self,
+                              s_feat: tf.Tensor,
+                              s_mask: tf.Tensor,
+                              actions: tf.Tensor,
+                              rewards: tf.Tensor,
+                              ns_feat: tf.Tensor,
+                              ns_mask: tf.Tensor):
+            """
+            One DQN update step: compute loss and apply gradients.
+            Uses self.rl_policy, self.target_policy, and self.optimizer.
+            """
+            with tf.GradientTape() as tape:
+                # Q(s,a) for taken actions
+                q_pred = self.rl_policy([s_feat, s_mask])                    # (B, num_actions)
+                act_onehot = tf.one_hot(actions, depth=q_pred.shape[-1])      # (B, num_actions)
+                q_pred_sa = tf.reduce_sum(q_pred * act_onehot, axis=1)        # (B,)
 
-            # TD target = r + γ · max_a' Q_target(s', a')
-            q_next = self.target_policy([ns_feat, ns_mask])              # (B, num_actions)
-            q_next_max = tf.reduce_max(q_next, axis=1)                   # (B,)
-            td_target = rewards + Defaults.GAT_GAMMA * q_next_max                     # (B,)
+                # TD target = r + γ · max_a' Q_target(s', a')
+                q_next = self.target_policy([ns_feat, ns_mask])              # (B, num_actions)
+                q_next_max = tf.reduce_max(q_next, axis=1)                   # (B,)
+                td_target = rewards + Defaults.GAT_GAMMA * q_next_max                     # (B,)
 
-            # MSE loss
-            loss = tf.reduce_mean(tf.square(q_pred_sa - tf.stop_gradient(td_target)))
+                # MSE loss
+                loss = tf.reduce_mean(tf.square(q_pred_sa - tf.stop_gradient(td_target)))
 
-        # Backprop & apply
-        grads = tape.gradient(loss, self.rl_policy.trainable_variables)
-        self.optimizer.apply_gradients(zip(grads, self.rl_policy.trainable_variables))
+            # Backprop & apply
+            grads = tape.gradient(loss, self.rl_policy.trainable_variables)
+            self.optimizer.apply_gradients(zip(grads, self.rl_policy.trainable_variables))
 
-        # Sync target network periodically
-        self.train_step_count += 1
-        if self.train_step_count % Defaults.GAT_TARGET_UPDATE_EVERY == 0:
-            self.target_policy.set_weights(self.rl_policy.get_weights())
+            # Sync target network periodically
+            self.train_step_count += 1
+            if self.train_step_count % Defaults.GAT_TARGET_UPDATE_EVERY == 0:
+                self.target_policy.set_weights(self.rl_policy.get_weights())
+
+        @tf.function(
+            input_signature=[
+                tf.TensorSpec(shape=(None, 1 + len(Defaults.AVAILABLE_DIRECTIONS), 9), dtype=tf.float32),
+                tf.TensorSpec(shape=(None, 1 + len(Defaults.AVAILABLE_DIRECTIONS)), dtype=tf.float32)
+            ],
+            reduce_retracing=True,
+            jit_compile=True
+        )
+        def _gat_q(self, feat, mask):
+            return self.rl_policy([feat, mask])
+
+        @tf.function(
+            input_signature=[
+                tf.TensorSpec(shape=(None, 1 + len(Defaults.AVAILABLE_DIRECTIONS), 9), dtype=tf.float32),
+                tf.TensorSpec(shape=(None, 1 + len(Defaults.AVAILABLE_DIRECTIONS)), dtype=tf.float32),
+                tf.TensorSpec(shape=(None,), dtype=tf.int32),
+                tf.TensorSpec(shape=(None,), dtype=tf.float32),
+                tf.TensorSpec(shape=(None, 1 + len(Defaults.AVAILABLE_DIRECTIONS), 9), dtype=tf.float32),
+                tf.TensorSpec(shape=(None, 1 + len(Defaults.AVAILABLE_DIRECTIONS)), dtype=tf.float32),
+            ],
+            reduce_retracing=True,
+            jit_compile=True
+        )
+        def _gat_train_step(self, s_feat, s_mask, actions, rewards, ns_feat, ns_mask):
+            return self.gat_agent_train_step(s_feat, s_mask, actions, rewards, ns_feat, ns_mask)
 
 
 

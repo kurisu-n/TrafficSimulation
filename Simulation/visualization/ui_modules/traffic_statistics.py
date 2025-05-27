@@ -156,7 +156,7 @@ class TrafficStatistics(TextElement):
             overtaking = dta.cached_stats.get("overtaking", 0)
             stuck = dta.cached_stats.get("stuck", 0)
             live_average_stuck_duration = dta.cached_stats.get("live_average_stuck_duration", 0.0)
-            live_max_stuck_duration = dta.cached_stats.get("max_stuck_duration", 0.0)
+            live_max_stuck_duration = dta.cached_stats.get("live_max_stuck_duration", 0.0)
             stuck_detouring = dta.cached_stats.get("stuck_detour", 0)
 
             traffic_section = f'''

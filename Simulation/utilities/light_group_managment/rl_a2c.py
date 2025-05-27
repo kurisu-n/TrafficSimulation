@@ -59,7 +59,7 @@ def get_rl_state(intersection_light_group: "IntersectionLightGroup") -> list[flo
     avg_n_ew = sum_n_ew / cnt
 
     phase_bit = [1, 0] if intersection_light_group._rl_phase == 0 else [0, 1]
-    t_norm = intersection_light_group._rl_timer / getattr(Defaults, 'TRAFFIC_LIGHT_MAX_GREEN', 30)
+    t_norm = intersection_light_group.rl_timer / getattr(Defaults, 'TRAFFIC_LIGHT_MAX_GREEN', 30)
 
     intersection_size_factor = intersection_light_group.intersection_size
     penalty_score = intersection_light_group.penalty_score
@@ -134,16 +134,16 @@ def run_a2c_control(
 
     for idx, (ig, act) in enumerate(zip(intersections, actions.numpy())):
         # -- timer & min-green bookkeeping (identical to old logic) ----
-        ig._rl_timer += 1
-        if ig._rl_timer == 1:
+        ig.rl_timer += 1
+        if ig.rl_timer == 1:
             ig.apply_phase(ig._rl_phase)
 
         if (
             act == 1
-            and ig._rl_timer >= getattr(Defaults, "TRAFFIC_LIGHT_MIN_GREEN", 5)
+            and ig.rl_timer >= getattr(Defaults, "TRAFFIC_LIGHT_MIN_GREEN", 5)
         ):
             ig._rl_phase = 1 - ig._rl_phase   # toggle phase
-            ig._rl_timer = 0
+            ig.rl_timer = 0
 
         # -- compute reward -------------------------------------------
         occ   = ig.city_model.occupancy_map

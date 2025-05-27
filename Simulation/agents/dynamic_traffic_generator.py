@@ -489,11 +489,12 @@ class DynamicTrafficAgent(Agent):
         if not getattr(self, "save_totals", False):
             return
 
-        if self._cached_stats_dirty:
-            self._update_cached_stats(True)
-            self._cached_stats_dirty = False
-
         if self.elapsed >= self._next_total_snapshot:
+
+            if self._cached_stats_dirty:
+                self._update_cached_stats(True)
+                self._cached_stats_dirty = False
+
             with open(self.totals_path, "w") as f:
                 f.write(",".join(_STAT_HEADERS) + "\n")
                 f.write(",".join(str(self.cached_stats.get(k, 0.0)) for k in _STAT_HEADERS) + "\n")
@@ -504,11 +505,12 @@ class DynamicTrafficAgent(Agent):
         if not getattr(self, "save_individual", False):
             return
 
-        if self._cached_stats_dirty:
-            self._update_cached_stats(True)
-            self._cached_stats_dirty = False
-
         if self.elapsed >= self._next_indiv_snapshot:
+
+            if self._cached_stats_dirty:
+                self._update_cached_stats(True)
+                self._cached_stats_dirty = False
+
             unit = Defaults.RESULTS_INDIVIDUAL_INTERVAL_UNIT
             secs_per_unit = {"hours": 3600, "minutes": 60, "seconds": 1}[unit]
             idx = int(self._next_indiv_snapshot / secs_per_unit)
@@ -532,7 +534,7 @@ class DynamicTrafficAgent(Agent):
         dist_live_int = dist_live_thr = 0
         n_live_int = n_live_thr = 0
         average_stuck_duration = 0
-        max_stuck_duration = 0
+        live_max_stuck_duration = 0
 
         for ag in city.schedule.agents:
             if isinstance(ag, VehicleAgent):
@@ -547,11 +549,13 @@ class DynamicTrafficAgent(Agent):
                     dist_live_thr += ag.steps_traveled
                     n_live_thr += 1
 
-                average_stuck_duration += ag.stuck_ticks
-                max_stuck_duration = max(max_stuck_duration, ag.stuck_ticks)
+                if ag.is_stuck:
+                    average_stuck_duration += ag.stuck_ticks
+                    live_max_stuck_duration = max(live_max_stuck_duration, ag.stuck_ticks)
 
-        self.live_average_stuck_duration = average_stuck_duration / n_live_int + n_live_thr
-        self.max_stuck_duration = max_stuck_duration
+
+        self.live_average_stuck_duration = (average_stuck_duration / self.stuck) if (self.stuck > 0) else 0.0
+        self.live_max_stuck_duration = live_max_stuck_duration
 
         # pre-existing, completed-only tallies
         dur_comp_int, dur_comp_thr = self.total_duration_internal, self.total_duration_through
@@ -606,41 +610,41 @@ class DynamicTrafficAgent(Agent):
             if self.daily_difference_history else 0.0
         )
 
-        if Defaults.SHOW_TRAFFIC_STATISTICS or force:
-            self.cached_stats["count_completed_internal"] = self.count_completed_internal
 
-            self.cached_stats["live_internal"] = self.live_internal
-            self.cached_stats["live_through"] = self.live_through
-            self.cached_stats["live_service_food"] = self.live_service_food
-            self.cached_stats["live_service_waste"] = self.live_service_waste
+        self.cached_stats["count_completed_internal"] = self.count_completed_internal
 
-            self.cached_stats["collisions"] = self.collisions
-            self.cached_stats["malfunctions"] = self.malfunctions
-            self.cached_stats["parked"] = self.parked
-            self.cached_stats["overtaking"] = self.overtaking
-            self.cached_stats["stuck"] = self.stuck
-            self.cached_stats["live_average_stuck_duration"] = self.live_average_stuck_duration
-            self.cached_stats["live_max_stuck_duration"] = self.max_stuck_duration
-            self.cached_stats["in_stuck_detour"] = self.in_stuck_detour
+        self.cached_stats["live_internal"] = self.live_internal
+        self.cached_stats["live_through"] = self.live_through
+        self.cached_stats["live_service_food"] = self.live_service_food
+        self.cached_stats["live_service_waste"] = self.live_service_waste
 
-            # Daily trip statistics (direct access — no method call overhead)
-            for kind in ("internal", "through", "service_food", "service_waste"):
-                total = (
-                    self.P_int if kind == "internal" else
-                    self.P_thr if kind == "through" else
-                    getattr(self, f"created_{kind}") + len(self.pending_trips_today(kind))
-                )
-                created = getattr(self, f"created_{kind}")
-                remaining = total - created
-                percentage = (created / total * 100) if total else 0.0
-                errored = getattr(self, f"errored_{kind}",0.0)
-                eta = self.next_service_eta(kind)
+        self.cached_stats["collisions"] = self.collisions
+        self.cached_stats["malfunctions"] = self.malfunctions
+        self.cached_stats["parked"] = self.parked
+        self.cached_stats["overtaking"] = self.overtaking
+        self.cached_stats["stuck"] = self.stuck
+        self.cached_stats["live_average_stuck_duration"] = self.live_average_stuck_duration
+        self.cached_stats["live_max_stuck_duration"] = self.live_max_stuck_duration
+        self.cached_stats["in_stuck_detour"] = self.in_stuck_detour
 
-                self.cached_stats[f"daily_total_{kind}"] = total
-                self.cached_stats[f"created_{kind}"] = created
-                self.cached_stats[f"remaining_{kind}"] = remaining
-                self.cached_stats[f"percentage_created_{kind}"] = percentage
-                self.cached_stats[f"errored_{kind}"] = errored
-                self.cached_stats[f"eta_{kind}"] = eta
+        # Daily trip statistics (direct access — no method call overhead)
+        for kind in ("internal", "through", "service_food", "service_waste"):
+            total = (
+                self.P_int if kind == "internal" else
+                self.P_thr if kind == "through" else
+                getattr(self, f"created_{kind}") + len(self.pending_trips_today(kind))
+            )
+            created = getattr(self, f"created_{kind}")
+            remaining = total - created
+            percentage = (created / total * 100) if total else 0.0
+            errored = getattr(self, f"errored_{kind}",0.0)
+            eta = self.next_service_eta(kind)
+
+            self.cached_stats[f"daily_total_{kind}"] = total
+            self.cached_stats[f"created_{kind}"] = created
+            self.cached_stats[f"remaining_{kind}"] = remaining
+            self.cached_stats[f"percentage_created_{kind}"] = percentage
+            self.cached_stats[f"errored_{kind}"] = errored
+            self.cached_stats[f"eta_{kind}"] = eta
 
 

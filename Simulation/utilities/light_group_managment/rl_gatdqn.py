@@ -121,7 +121,7 @@ def get_gat_state(intersection_light_group: "IntersectionLightGroup"):
     # Current phase (0 or 1) and normalized time elapsed in that phase
     phase = getattr(intersection_light_group, '_rl_phase', 0)
     phase_bit = [1.0, 0.0] if phase == 0 else [0.0, 1.0]
-    t_norm = intersection_light_group._rl_timer / getattr(Defaults, "TRAFFIC_LIGHT_MAX_GREEN", 30)
+    t_norm = intersection_light_group.rl_timer / getattr(Defaults, "TRAFFIC_LIGHT_MAX_GREEN", 30)
     # Static intersection features
     intersection_size = intersection_light_group.intersection_size
     penalty_score = intersection_light_group.penalty_score
@@ -182,7 +182,7 @@ def run_gat_dqn_control(intersection_light_group: "IntersectionLightGroup"):
     # Initialize RL phase/timer if not already set
     if not hasattr(intersection_light_group, '_rl_phase'):
         intersection_light_group._rl_phase = 0
-        intersection_light_group._rl_timer = 0
+        intersection_light_group.rl_timer = 0
     # Compute current state (graph features + mask)
     node_features, mask = get_gat_state(intersection_light_group)
     state = (node_features, mask)
@@ -202,16 +202,16 @@ def run_gat_dqn_control(intersection_light_group: "IntersectionLightGroup"):
     # Decay epsilon (for future steps)
     intersection_light_group.epsilon = max(EPS_MIN, intersection_light_group.epsilon - EPS_DECAY_RATE)
     # Apply the chosen action (traffic light phase control)
-    intersection_light_group._rl_timer += 1
-    if intersection_light_group._rl_timer == 1:
+    intersection_light_group.rl_timer += 1
+    if intersection_light_group.rl_timer == 1:
         # On first tick of a phase (timer reset), actually apply the current phase setting to lights
         intersection_light_group.apply_phase(intersection_light_group._rl_phase)
     # If action=1 (switch) and minimum green time has elapsed, toggle the phase
     min_green = getattr(Defaults, "TRAFFIC_LIGHT_MIN_GREEN", 5)
-    if action == 1 and intersection_light_group._rl_timer >= min_green:
+    if action == 1 and intersection_light_group.rl_timer >= min_green:
         # Switch phase (0->1 or 1->0)
         intersection_light_group._rl_phase = 1 - intersection_light_group._rl_phase
-        intersection_light_group._rl_timer = 0  # reset timer after switching
+        intersection_light_group.rl_timer = 0  # reset timer after switching
     # Compute reward for this action
     # Reward includes local queue penalty and global metrics (average trip duration & time per block)
     occ_map = intersection_light_group.city_model.occupancy_map
@@ -284,7 +284,7 @@ def run_batched_gat_dqn_control(intersections: list["IntersectionLightGroup"]):
         # --- ε-greedy action via compiled forward pass ---
         state_feat = feat_tensor[i : i + 1]    # shape (1,5,9)
         state_mask = mask_tensor[i : i + 1]    # shape (1,5)
-        q_vals = _tf_q_values(ig.rl_policy, state_feat, state_mask)[0].numpy()
+        q_vals = ig.gat_q_func(state_feat, state_mask)[0].numpy()
 
         if random.random() < ig.epsilon:
             action = random.randrange(len(q_vals))
@@ -295,12 +295,12 @@ def run_batched_gat_dqn_control(intersections: list["IntersectionLightGroup"]):
         ig.epsilon = max(EPS_MIN, ig.epsilon - EPS_DECAY_RATE)
 
         # --- apply traffic-light action ---
-        ig._rl_timer += 1
-        if ig._rl_timer == 1:
+        ig.rl_timer += 1
+        if ig.rl_timer == 1:
             ig.apply_phase(ig._rl_phase)
-        if action == 1 and ig._rl_timer >= Defaults.GAT_TRAFFIC_RL_MIN_GREEN:
+        if action == 1 and ig.rl_timer >= Defaults.GAT_TRAFFIC_RL_MIN_GREEN:
             ig._rl_phase = 1 - ig._rl_phase
-            ig._rl_timer = 0
+            ig.rl_timer = 0
 
         # --- compute reward: local queue + global metrics ---
         occ = ig.city_model.occupancy_map

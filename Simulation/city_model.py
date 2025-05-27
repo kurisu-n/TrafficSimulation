@@ -112,6 +112,7 @@ class CityModel(Model):
         self.is_road_map = np.zeros((self.height, self.width), dtype=np.int8)
         self.road_type_map = np.zeros_like(self.is_road_map, dtype=np.int8)
         self.intersection_map = np.zeros((self.height, self.width), dtype=np.int8)
+        self.stuck_map = np.zeros((self.height, self.width), dtype=np.int8)
 
         self.cell_agent_cache = {}
         self.path_cache = {}
@@ -159,7 +160,7 @@ class CityModel(Model):
             )
             import tensorflow as tf
 
-            input_dim = 13
+            input_dim = Defaults.SRL_INPUT_DIMENSIONS
             hidden = getattr(Defaults, "RL_POLICY_HIDDEN", Defaults.SRL_HIDDEN_LAYER_SIZE)
             lr = getattr(Defaults, "RL_LEARNING_RATE", Defaults.SRL_LEARNING_RATE)
 
@@ -172,7 +173,7 @@ class CityModel(Model):
                 ig.rl_policy = self.shared_rl_policy
                 ig.optimizer = self.shared_optimizer
 
-            warmup_simple_rl_model(self.shared_rl_policy, self.shared_optimizer, input_dim=13)
+            warmup_simple_rl_model(self.shared_rl_policy, self.shared_optimizer, input_dim=Defaults.SRL_INPUT_DIMENSIONS)
 
         if Defaults.TRAFFIC_LIGHT_AGENT_ALGORITHM == "RL_A2C_BATCHED":
             from Simulation.utilities.light_group_managment.rl_a2c import (
@@ -1537,7 +1538,7 @@ class CityModel(Model):
                 if self.in_bounds(bx, by):
                     nb = self.get_cell_contents(bx, by)[0]
                     if nb.cell_type == original_road_type and nb.leads_to(road):
-                        traffic_light.assigned_road_blocks.append(nb)
+                        traffic_light.assigned_incoming_road_blocks.append(nb)
                         nb.light = traffic_light
                         bx, by = self.next_cell_in_direction(bx, by, rd)
                         scan_depth += 1
@@ -1557,11 +1558,11 @@ class CityModel(Model):
                 currently_scanned_road = self.get_cell_contents(bx, by)[0]
                 if currently_scanned_road.cell_type == "Intersection":
                     if self.forward_traffic_light_range_intersections == Defaults.FORWARD_TRAFFIC_LIGHT_INTERSECTION_OPTIONS[1]:
-                        traffic_light.assigned_road_blocks.append(currently_scanned_road)
+                        traffic_light.assigned_outgoing_road_blocks.append(currently_scanned_road)
                         currently_scanned_road.light = traffic_light
                         current_depth += 1
                     elif self.forward_traffic_light_range_intersections == Defaults.FORWARD_TRAFFIC_LIGHT_INTERSECTION_OPTIONS[2]:
-                        traffic_light.assigned_road_blocks.append(currently_scanned_road)
+                        traffic_light.assigned_outgoing_road_blocks.append(currently_scanned_road)
                         currently_scanned_road.light = traffic_light
                     bx, by = self.next_cell_in_direction(bx, by, rd)
                 elif currently_scanned_road.cell_type == original_road_type:
@@ -1575,7 +1576,7 @@ class CityModel(Model):
                             current_depth + 1
                         )
                     elif rd in currently_scanned_road.directions:
-                        traffic_light.assigned_road_blocks.append(currently_scanned_road)
+                        traffic_light.assigned_outgoing_road_blocks.append(currently_scanned_road)
                         currently_scanned_road.light = traffic_light
                         current_depth += 1
                     bx, by = self.next_cell_in_direction(bx, by, rd)
@@ -1903,6 +1904,7 @@ class CityModel(Model):
         self.active_vehicle_agents.append(vehicle)
         self.grid.place_agent(vehicle, pos)
         self.occupancy_map[pos[1], pos[0]] = 1
+        self.stuck_map[pos[1], pos[0]] = 1 if vehicle.is_stuck else 0
         self.schedule.add(vehicle)
 
         if population_type == "internal":
@@ -1919,6 +1921,7 @@ class CityModel(Model):
                       , population_type: str = "undefined", vehicle_type: str = "undefined"):
         x, y = vehicle.pos
         self.occupancy_map[y, x] = 0
+        self.stuck_map[y, x] = 0
         v_pos = (x, y)
 
         self.active_vehicle_agents.remove(vehicle)
@@ -1951,6 +1954,8 @@ class CityModel(Model):
         self.grid.move_agent(vehicle, new_pos)
 
         self.occupancy_map[ny, nx] = 1
+        self.stuck_map[oy, ox] = 0
+        self.stuck_map[ny, nx] = 1 if vehicle.is_stuck else 0
 
         vehicle.pos = new_pos  # update agent's cached position
 

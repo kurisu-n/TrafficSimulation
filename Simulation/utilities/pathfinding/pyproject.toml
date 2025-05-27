@@ -1,0 +1,16 @@
+[build-system]
+requires = [
+    "scikit-build-core>=0.4",
+    "pybind11>=2.10",
+    "ninja"
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name        = "astar_cpp"
+version     = "0.1.0"
+description = "C++/pybind11 A* backend"
+
+[tool.scikit-build]
+minimum-version = "0.4"
+wheel.packages  = ["Simulation.utilities.pathfinding"]

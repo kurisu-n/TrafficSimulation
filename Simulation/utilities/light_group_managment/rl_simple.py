@@ -4,7 +4,10 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, optimizers
 from Simulation.config import Defaults
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Tuple
+
+from Simulation.utilities.numba_utilities import compute_cross_pressure, compute_local_and_cross_pressure, \
+    avg_pressures_in_neighbors
 
 if TYPE_CHECKING:
     from Simulation.agents.city_structure_entities.intersection_light_group import IntersectionLightGroup
@@ -24,6 +27,58 @@ UPDATE_EVERY = Defaults.SRL_UPDATE_EVERY
 BATCH_SIZE   = Defaults.SRL_BATCH_SIZE
 DROPOUT      = Defaults.SRL_DROPOUT
 
+def compute_pressure(
+    ig: "IntersectionLightGroup",
+    flow_map: np.ndarray
+) -> Tuple[float, float, float, float]:
+    """
+    Compute NS and EW pressures for a given light-group using cached coords.
+    Handles empty coord lists by reshaping to (0, 2).
+    Returns: (local_ns, local_ew, p_ns, p_ew)
+    """
+    # Cache and normalize coordinate grids on first use
+    if not hasattr(ig, 'ns_coords'):
+        ig.ns_coords = np.array(ig.ns_in_coords, dtype=np.int64).reshape(-1, 2)
+        ig.ew_coords = np.array(ig.ew_in_coords, dtype=np.int64).reshape(-1, 2)
+    # Ensure shape correctness in case coords were modified
+    if ig.ns_coords.ndim == 1:
+        ig.ns_coords = ig.ns_coords.reshape(-1, 2)
+    if ig.ew_coords.ndim == 1:
+        ig.ew_coords = ig.ew_coords.reshape(-1, 2)
+
+    # Sum flows; if no coords, sum over empty returns 0.0
+    local_ns = float(flow_map[ig.ns_coords[:, 1], ig.ns_coords[:, 0]].sum())
+    local_ew = float(flow_map[ig.ew_coords[:, 1], ig.ew_coords[:, 0]].sum())
+
+    # Pressure definitions
+    p_ns = local_ns - local_ew
+    p_ew = local_ew - local_ns
+
+    # Store for neighbor averaging and later use
+    ig.pressure_ns = p_ns
+    ig.pressure_ew = p_ew
+    return local_ns, local_ew, p_ns, p_ew
+
+
+def avg_neighbor_pressures(
+    nbrs: List["IntersectionLightGroup"],
+    flow_map: np.ndarray
+) -> Tuple[float, float]:
+    """
+    Ensure each neighbor has up-to-date _pressure_*, then return simple mean.
+    """
+    for n in nbrs:
+        if not hasattr(n, 'pressure_ns'):
+            compute_pressure(n, flow_map)
+
+    ps_ns = np.fromiter((n.pressure_ns for n in nbrs), dtype=np.float64)
+    ps_ew = np.fromiter((n.pressure_ew for n in nbrs), dtype=np.float64)
+
+    cnt = max(1, ps_ns.size)
+    return ps_ns.sum() / cnt, ps_ew.sum() / cnt
+
+
+
 def make_policy_net(input_dim=13, hidden=SRL_HIDDEN_LAYER_SIZE):
     with tf.device(tf_device):
         inputs = tf.keras.Input(shape=(input_dim,), name="state")
@@ -37,51 +92,75 @@ def make_policy_net(input_dim=13, hidden=SRL_HIDDEN_LAYER_SIZE):
         logits = layers.Dense(2)(x)
         return tf.keras.Model(inputs=inputs, outputs=logits)
 
-def get_rl_state(intersection_light_group: "IntersectionLightGroup") -> list[float]:
+def get_rl_state(
+    intersection_light_group: "IntersectionLightGroup"
+) -> List[float]:
     city = intersection_light_group.city_model
     occupancy = city.occupancy_map
+    stuck_map = city.stuck_map
 
-    ns_coords = np.array(intersection_light_group.ns_in_coords)
-    ew_coords = np.array(intersection_light_group.ew_in_coords)
-
-    local_ns = occupancy[ns_coords[:, 1], ns_coords[:, 0]].sum() if ns_coords.size else 0
-    local_ew = occupancy[ew_coords[:, 1], ew_coords[:, 0]].sum() if ew_coords.size else 0
-    p_ns = local_ns - local_ew
-    p_ew = local_ew - local_ns
+    local_ns, local_ew, p_ns, p_ew = compute_pressure(
+        intersection_light_group, occupancy
+    )
 
     nbrs = list(intersection_light_group.get_neighbor_groups().values())
-    sum_n_ns = sum(getattr(n, '_pressure_ns', 0) for n in nbrs)
-    sum_n_ew = sum(getattr(n, '_pressure_ew', 0) for n in nbrs)
-    cnt = max(1, len(nbrs))
-    avg_n_ns = sum_n_ns / cnt
-    avg_n_ew = sum_n_ew / cnt
+    nbrs_cnt = max(1, len(nbrs))
 
-    phase_bit = [1, 0] if intersection_light_group._rl_phase == 0 else [0, 1]
-    t_norm = intersection_light_group._rl_timer / getattr(Defaults, 'TRAFFIC_LIGHT_MAX_GREEN', 30)
+    phase_bit = [1.0, 0.0] if intersection_light_group._rl_phase == 0 else [0.0, 1.0]
+    timer_norm = (
+        intersection_light_group.rl_timer /
+        float(getattr(intersection_light_group.__class__, 'TRAFFIC_LIGHT_MAX_GREEN', 30))
+    )
 
-    intersection_size = intersection_light_group.intersection_size
-    penalty_score = intersection_light_group.penalty_score
+    state = [
+        local_ns, local_ew,
+        p_ns, p_ew,
+        *phase_bit,
+        timer_norm
+    ]
 
-    avg_penalty_intersection_size = sum(getattr(n, 'intersection_size', 0) for n in nbrs)/cnt
-    avg_penalty_score = sum(getattr(n, 'penalty_score', 0) for n in nbrs)/cnt
+    if Defaults.SRL_INPUT_DIMENSIONS > 7:
+        size = intersection_light_group.intersection_size
+        penalty = intersection_light_group.penalty_score
+        avg_size = sum(getattr(n, 'intersection_size', 0) for n in nbrs) / nbrs_cnt
+        avg_pen = sum(getattr(n, 'penalty_score', 0)   for n in nbrs) / nbrs_cnt
+        state += [size, penalty, avg_size, avg_pen]
 
-    return [float(local_ns), float(local_ew), p_ns, p_ew, avg_n_ns, avg_n_ew] + phase_bit + [t_norm] + [intersection_size,penalty_score,avg_penalty_intersection_size, avg_penalty_score]
+    if Defaults.SRL_INPUT_DIMENSIONS > 11:
+        avg_n_ns, avg_n_ew = avg_neighbor_pressures(nbrs, occupancy)
+        state += [avg_n_ns, avg_n_ew]
 
-def run_rl_control(intersection_light_group: "IntersectionLightGroup"):
+    if Defaults.SRL_INPUT_DIMENSIONS > 13:
+        ln_s, le_s, ps_ns, ps_ew = compute_pressure(
+            intersection_light_group, stuck_map
+        )
+        state += [ln_s, le_s, ps_ns, ps_ew]
+
+    if Defaults.SRL_INPUT_DIMENSIONS > 17:
+        avg_sn_ns, avg_sn_ew = avg_neighbor_pressures(nbrs, stuck_map)
+        state += [avg_sn_ns, avg_sn_ew]
+
+    return state
+
+# -----------------------------------------------------------------------------
+# Optimized RL control loop
+# -----------------------------------------------------------------------------
+
+def run_rl_control(
+    intersection_light_group: "IntersectionLightGroup"
+) -> None:
+    # Initialize phase and timer
     if not hasattr(intersection_light_group, '_rl_phase'):
         intersection_light_group._rl_phase = 0
-        intersection_light_group._rl_timer = 0
+        intersection_light_group.rl_timer = 0
 
-    occ = intersection_light_group.city_model.occupancy_map
-    ns_coords = np.array(intersection_light_group.ns_in_coords)
-    ew_coords = np.array(intersection_light_group.ew_in_coords)
-    local_ns = occ[ns_coords[:, 1], ns_coords[:, 0]].sum() if ns_coords.size else 0
-    local_ew = occ[ew_coords[:, 1], ew_coords[:, 0]].sum() if ew_coords.size else 0
+    # Compute and store current pressures
+    city = intersection_light_group.city_model
+    compute_pressure(intersection_light_group, city.occupancy_map)
+    intersection_light_group.pressure_ns = int(intersection_light_group.pressure_ns)
+    intersection_light_group.pressure_ew = int(intersection_light_group.pressure_ew)
 
-
-    intersection_light_group._pressure_ns = int(local_ns - local_ew)
-    intersection_light_group._pressure_ew = int(local_ew - local_ns)
-
+    # Create RL state & get action
     state = get_rl_state(intersection_light_group)
     state_tensor = tf.convert_to_tensor([state], dtype=tf.float32)
 
@@ -90,72 +169,98 @@ def run_rl_control(intersection_light_group: "IntersectionLightGroup"):
         action_probs = tf.nn.softmax(logits[0])
         action = int(np.random.choice([0, 1], p=action_probs.numpy()))
 
-    intersection_light_group._rl_timer += 1
-    if intersection_light_group._rl_timer == 1:
+    # Apply phase on first timestep
+    intersection_light_group.rl_timer += 1
+    if intersection_light_group.rl_timer == 1:
         intersection_light_group.apply_phase(intersection_light_group._rl_phase)
 
-    min_g = getattr(Defaults, 'TRAFFIC_LIGHT_MIN_GREEN', 5)
-    if action == 1 and intersection_light_group._rl_timer >= min_g:
+    # Phase switch logic
+    if action == 1 and intersection_light_group.rl_timer >= Defaults.SRL_MIN_GREEN:
         intersection_light_group._rl_phase = 1 - intersection_light_group._rl_phase
-        intersection_light_group._rl_timer = 0
+        intersection_light_group.rl_timer = 0
 
-    reward = -(local_ns + local_ew)
+    # Reward computation
+    neg_reward = intersection_light_group.pressure_ns + intersection_light_group.pressure_ew
+    if Defaults.SRL_PUNISH_STUCK:
+        compute_pressure(intersection_light_group, city.stuck_map)
+        neg_reward += (
+            intersection_light_group.pressure_ns +
+            intersection_light_group.pressure_ew
+        ) * Defaults.SRL_PUNISH_STUCK_FACTOR
+    reward = -neg_reward
+
+    # Store transition
     next_state = get_rl_state(intersection_light_group)
-    intersection_light_group.memory.append((state, int(action), reward, next_state))
+    intersection_light_group.memory.append((state, action, reward, next_state))
 
+    # Periodic training
     if len(intersection_light_group.memory) >= UPDATE_EVERY:
         train_rl(intersection_light_group, BATCH_SIZE)
         intersection_light_group.memory.clear()
 
-def run_batched_rl_control(intersections: list["IntersectionLightGroup"], policy_model: tf.keras.Model):
-    states = []
-    batch = []
+# -----------------------------------------------------------------------------
+# Optimized batched RL control
+# -----------------------------------------------------------------------------
 
+def run_batched_rl_control(
+    intersections: List["IntersectionLightGroup"],
+    policy_model: tf.keras.Model
+) -> None:
+    # Precompute pressures and states
+    states: List[List[float]] = []
     for ig in intersections:
-        occ = ig.city_model.occupancy_map
-        ns_coords = np.array(ig.ns_in_coords)
-        ew_coords = np.array(ig.ew_in_coords)
-        local_ns = occ[ns_coords[:, 1], ns_coords[:, 0]].sum() if ns_coords.size else 0
-        local_ew = occ[ew_coords[:, 1], ew_coords[:, 0]].sum() if ew_coords.size else 0
+        city = ig.city_model
+        compute_pressure(ig, city.occupancy_map)
+        ig.pressure_ns = ig.pressure_ns
+        ig.pressure_ew = ig.pressure_ew
+        states.append(get_rl_state(ig))
 
-        ig._pressure_ns = int(local_ns - local_ew)
-        ig._pressure_ew = int(local_ew - local_ns)
-        state = get_rl_state(ig)
-        states.append(state)
-
+    # Batch inference
     states_tensor = tf.convert_to_tensor(states, dtype=tf.float32)
-
     with tf.device(tf_device):
         logits = policy_model(states_tensor)
-        action_probs = tf.nn.softmax(logits).numpy()
+        action_probs = tf.nn.softmax(logits, axis=1).numpy()
         actions = [int(np.random.choice([0, 1], p=ap)) for ap in action_probs]
 
+    # Apply actions and collect transitions
     for ig, action in zip(intersections, actions):
-        ig._rl_timer += 1
-        if ig._rl_timer == 1:
+        # Phase timing
+        if not hasattr(ig, '_rl_phase'):
+            ig._rl_phase = 0
+            ig.rl_timer = 0
+        ig.rl_timer += 1
+        if ig.rl_timer == 1:
             ig.apply_phase(ig._rl_phase)
-
-        min_g = getattr(Defaults, 'TRAFFIC_LIGHT_MIN_GREEN', 5)
-        if action == 1 and ig._rl_timer >= min_g:
+        if action == 1 and ig.rl_timer >= Defaults.SRL_MIN_GREEN:
             ig._rl_phase = 1 - ig._rl_phase
-            ig._rl_timer = 0
+            ig.rl_timer = 0
 
-        occ = ig.city_model.occupancy_map
-        ns_coords = np.array(ig.ns_in_coords)
-        ew_coords = np.array(ig.ew_in_coords)
-        local_ns = occ[ns_coords[:, 1], ns_coords[:, 0]].sum() if ns_coords.size else 0
-        local_ew = occ[ew_coords[:, 1], ew_coords[:, 0]].sum() if ew_coords.size else 0
+        # Compute reward
+        city = ig.city_model
+        neg_reward = ig.pressure_ns + ig.pressure_ew
+        if Defaults.SRL_INPUT_DIMENSIONS > 11 and Defaults.SRL_PUNISH_STUCK:
+            compute_pressure(ig, city.stuck_map)
+            neg_reward += (ig.pressure_ns + ig.pressure_ew) * Defaults.SRL_PUNISH_STUCK_FACTOR
+        if Defaults.SRL_INPUT_DIMENSIONS > 15 and Defaults.SRL_PUNISH_NEIGHBOR:
+            nbrs = list(ig.get_neighbor_groups().values())
+            avg_n_ns_stuck, avg_n_ew_stuck = avg_neighbor_pressures(nbrs, city.stuck_map)
+            neg_reward += (avg_n_ns_stuck + avg_n_ew_stuck) * Defaults.SRL_PUNISH_NEIGHBOR_FACTOR
+        reward = -neg_reward
 
-        reward = -(local_ns + local_ew)
+        # Store transition
         next_state = get_rl_state(ig)
-        ig.memory.append((state, action, reward, next_state))
+        ig.memory.append((states[intersections.index(ig)], action, reward, next_state))
 
-    if sum(len(ig.memory) for ig in intersections) >= 256:
-        shared_memory = []
+    # Batch training
+    total_mem = sum(len(ig.memory) for ig in intersections)
+    if total_mem >= UPDATE_EVERY:
+        shared = []
         for ig in intersections:
-            shared_memory.extend(ig.memory)
+            shared.extend(ig.memory)
             ig.memory.clear()
-        train_rl_batch(policy_model, intersections[0].optimizer, shared_memory, batch_size=64)
+        train_rl_batch(policy_model, intersections[0].optimizer, shared, batch_size=64)
+
+
 
 def train_rl_batch(policy_model: tf.keras.Model, optimizer: tf.keras.optimizers.Optimizer, memory: list, batch_size: int = 64):
     batch = random.sample(memory, batch_size)

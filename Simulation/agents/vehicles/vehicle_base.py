@@ -669,19 +669,15 @@ class VehicleAgent(Agent):
         if not Defaults.PATHFINDING_BATCHING:
             self.step_decide()
 
-        if self._early_exit:
+        if not self._early_exit:
+            self._execute_movement(self.max_steps)
+            moved_this_tick = True
+            if not moved_this_tick and (not self.path or len(self.path) == 0):
+                self.path = self._compute_path()
+            self.previous_pos = self.pos
+        else:
             self._early_exit = False
             self.tick_stuck()
-            return
-
-
-        self._execute_movement(self.max_steps)
-        # moved_this_tick = True
-
-        # if not moved_this_tick and (not self.path or len(self.path) == 0):
-        #     self.path = self._compute_path()
-
-        self.previous_pos = self.pos
 
         if self.pos == self.target.get_position():
             self.on_target_reached()
@@ -693,11 +689,16 @@ class VehicleAgent(Agent):
             self.stuck_ticks += 1
             if self.stuck_ticks > Defaults.VEHICLE_STUCK_RECOMPUTE_THRESHOLD and not self.is_stuck:
                 self.city_model.dynamic_traffic_generator.stuck += 1
+
                 self.is_stuck = True
 
     def _despawn_check(self):
         despawn_threshold = Defaults.VEHICLE_STUCK_DESPAWN_THRESHOLD_INTERSECTION if self._is_at_intersection() else Defaults.VEHICLE_STUCK_DESPAWN_THRESHOLD
         if Defaults.VEHICLE_STUCK_DESPAWN_ENABLED and self.stuck_ticks >= despawn_threshold:
+            if self.is_stuck:
+                self.city_model.dynamic_traffic_generator.stuck -= 1
+                self.is_stuck = False
+
             if self.population_type == "internal":
                 self.city_model.dynamic_traffic_generator.errored_internal += 1
             else:

@@ -41,7 +41,8 @@ class CellAgent(Agent):
 
         self.intersection_group = None
         self.light = None
-        self.assigned_road_blocks = []
+        self.assigned_incoming_road_blocks = []
+        self.assigned_outgoing_road_blocks = []
         self.controlled_blocks = []
 
         self.city_model.cell_lookup[self.position] = self
